@@ -1,0 +1,107 @@
+-- ═══════════════════════════════════════════════════════════════════
+--  StudyFlow — Supabase schema
+--  Run this in the Supabase SQL editor (Project > SQL Editor > New query)
+-- ═══════════════════════════════════════════════════════════════════
+
+-- ─── Extensions ────────────────────────────────────────────────────
+-- pgcrypto for gen_random_uuid() (available by default on Supabase)
+-- moddatetime for auto-updating updated_at trigger
+create extension if not exists moddatetime schema extensions;
+
+-- ─── Main sync table ───────────────────────────────────────────────
+-- One row per (user, store, item). The entire item is stored as JSONB
+-- so we never need to run a migration when local stores evolve.
+-- Soft-delete: deleted_at is set instead of dropping rows, so every
+-- device can learn about deletions on next pull.
+
+create table if not exists public.studyflow_items (
+  user_id    uuid    not null references auth.users (id) on delete cascade,
+  store      text    not null,   -- IndexedDB store name, e.g. 'subjects', 'courses'
+  id         text    not null,   -- item id (UUID string)
+  data       jsonb   not null default '{}',
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz,        -- null = alive; non-null = soft-deleted
+  primary key (user_id, store, id)
+);
+
+-- Index for efficient per-user pulls (ordered by updated_at for incremental sync)
+create index if not exists studyflow_items_user_updated
+  on public.studyflow_items (user_id, updated_at desc);
+
+-- Index for efficient deleted-item cleanup queries
+create index if not exists studyflow_items_deleted
+  on public.studyflow_items (user_id, store, deleted_at)
+  where deleted_at is not null;
+
+-- Auto-update updated_at on any row change
+create or replace trigger handle_updated_at
+  before update on public.studyflow_items
+  for each row execute procedure extensions.moddatetime(updated_at);
+
+-- ─── Row Level Security ─────────────────────────────────────────────
+alter table public.studyflow_items enable row level security;
+
+-- Users can only read their own rows
+create policy "Users read own items"
+  on public.studyflow_items for select
+  using (auth.uid() = user_id);
+
+-- Users can insert rows for themselves only
+create policy "Users insert own items"
+  on public.studyflow_items for insert
+  with check (auth.uid() = user_id);
+
+-- Users can update their own rows
+create policy "Users update own items"
+  on public.studyflow_items for update
+  using (auth.uid() = user_id);
+
+-- Users can hard-delete their own rows (used only for purge, not normal sync)
+create policy "Users delete own items"
+  on public.studyflow_items for delete
+  using (auth.uid() = user_id);
+
+-- ─── Storage: documents bucket ─────────────────────────────────────
+-- Files uploaded to the Library (PDFs, images) are stored here.
+-- Path convention: {user_id}/{document_id}/{filename}
+
+insert into storage.buckets (id, name, public)
+values ('documents', 'documents', false)
+on conflict (id) do nothing;
+
+-- Upload: users can only upload under their own folder
+create policy "Users upload own documents"
+  on storage.objects for insert
+  with check (
+    bucket_id = 'documents'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- Read: users can only read their own files
+create policy "Users read own documents"
+  on storage.objects for select
+  using (
+    bucket_id = 'documents'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- Delete: users can delete their own files
+create policy "Users delete own documents"
+  on storage.objects for delete
+  using (
+    bucket_id = 'documents'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+-- ─── Helper: purge old soft-deleted rows (optional cron) ───────────
+-- You can schedule this in Supabase Cron (or pg_cron) to keep the
+-- table tidy. Removes rows soft-deleted more than 90 days ago.
+--
+-- select cron.schedule(
+--   'purge-deleted-items',
+--   '0 3 * * 0',   -- every Sunday at 3 AM
+--   $$
+--     delete from public.studyflow_items
+--     where deleted_at < now() - interval '90 days';
+--   $$
+-- );
