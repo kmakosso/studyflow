@@ -93,6 +93,49 @@ create policy "Users delete own documents"
     and (storage.foldername(name))[1] = auth.uid()::text
   );
 
+-- ─── Shared content (flashcard sharing) ───────────────────────────
+-- Public table — no user_id. Anyone with the UUID can read the row.
+-- Inserts are allowed to any authenticated or anonymous user (anon key).
+-- Rows auto-expire after 30 days (enforced at app level too).
+
+create table if not exists public.shared_content (
+  id          uuid        primary key default gen_random_uuid(),
+  type        text        not null,          -- 'flashcards'
+  title       text        not null,
+  content     jsonb       not null,          -- { cards: [{front, back}] }
+  author_name text,
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz
+);
+
+-- Index for fast lookup by id (already indexed as PK)
+-- Index to let a cron job purge expired rows efficiently
+create index if not exists shared_content_expires
+  on public.shared_content (expires_at)
+  where expires_at is not null;
+
+alter table public.shared_content enable row level security;
+
+-- Anyone (including anon) can read shared content
+create policy "Anyone can read shared content"
+  on public.shared_content for select
+  using (true);
+
+-- Anyone (including anon key) can create a share — no auth required
+create policy "Anyone can create shared content"
+  on public.shared_content for insert
+  with check (true);
+
+-- Optional cron to purge expired shares:
+-- select cron.schedule(
+--   'purge-expired-shares',
+--   '0 4 * * *',   -- daily at 4 AM
+--   $$
+--     delete from public.shared_content
+--     where expires_at < now();
+--   $$
+-- );
+
 -- ─── Helper: purge old soft-deleted rows (optional cron) ───────────
 -- You can schedule this in Supabase Cron (or pg_cron) to keep the
 -- table tidy. Removes rows soft-deleted more than 90 days ago.

@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { Plus, Pencil, Trash2, RotateCcw, ChevronRight } from 'lucide-react';
+import { Plus, Pencil, Trash2, RotateCcw, ChevronRight, Share2, FileDown } from 'lucide-react';
 import { useRevision } from '../hooks/useRevision';
 import { useSubjects } from '../hooks/useSubjects';
 import { computeNextReview, getStatusColor, getStatusLabel, isDue } from '../services/srs';
 import Modal from '../components/shared/Modal';
+import ShareModal from '../components/shared/ShareModal';
+import { printFlashcards } from '../services/printService';
 
 function CardForm({ initial, subjects, onSubmit, onCancel }) {
   const [v, setV] = useState({
@@ -118,6 +120,7 @@ export default function Revision() {
   const [editing, setEditing]     = useState(null);
   const [studying, setStudying]   = useState(false);
   const [subFilter, setSubFilter] = useState('all');
+  const [shareOpen, setShareOpen] = useState(false);
 
   const due = dueToday();
 
@@ -155,6 +158,17 @@ export default function Revision() {
           {due.length > 0 && (
             <button className="btn-primary" style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={() => setStudying(true)}>
               <RotateCcw size={14} /> Réviser ({due.length})
+            </button>
+          )}
+          {filtered.length > 0 && (
+            <button className="btn-ghost" style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={() => setShareOpen(true)}>
+              <Share2 size={14} /> Partager
+            </button>
+          )}
+          {filtered.length > 0 && (
+            <button className="btn-ghost" style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+              onClick={() => printFlashcards(filtered, subFilter === 'all' ? 'Mes fiches de révision' : subjects.find(s => s.id === subFilter)?.name ?? 'Fiches')}>
+              <FileDown size={14} /> Exporter PDF
             </button>
           )}
           <button className="btn-ghost" style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={() => { setEditing(null); setOpen(true); }}>
@@ -226,6 +240,14 @@ export default function Revision() {
           initial={editing} subjects={subjects}
           onSubmit={async (data) => { editing ? await update(editing.id, data) : await add(data); setOpen(false); setEditing(null); }}
           onCancel={() => { setOpen(false); setEditing(null); }}
+        />
+      </Modal>
+
+      <Modal isOpen={shareOpen} onClose={() => setShareOpen(false)} title="Partager les fiches">
+        <ShareModal
+          cards={filtered}
+          title={subFilter === 'all' ? 'Mes fiches de révision' : subjects.find(s => s.id === subFilter)?.name ?? 'Fiches'}
+          onClose={() => setShareOpen(false)}
         />
       </Modal>
     </div>

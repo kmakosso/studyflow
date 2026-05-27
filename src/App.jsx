@@ -18,6 +18,7 @@ import Profile     from './pages/Profile';
 import Assistant   from './pages/Assistant';
 import Workspace   from './pages/Workspace';
 import Library     from './pages/Library';
+import SharedView  from './pages/SharedView';
 
 export default function App() {
   return (
@@ -26,6 +27,9 @@ export default function App() {
       <PomodoroProvider>
         <IntelligenceProvider>
           <Routes>
+            {/* Public share page — no layout, no auth */}
+            <Route path="/share/:id" element={<SharedView />} />
+
             <Route path="/" element={<Layout />}>
               <Route index              element={<Dashboard   />} />
               <Route path="subjects"    element={<Subjects    />} />

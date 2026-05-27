@@ -4,14 +4,17 @@
  * No content leaves the device until the user explicitly consents.
  */
 
+// Resolve the worker URL at build time so it works offline (PWA) and
+// avoids version mismatches with CDN-hosted workers.
+import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
 /* ─── PDF via pdfjs-dist ─────────────────────────────────────────── */
 async function parsePdf(file) {
-  // Lazy-load pdfjs to avoid bloating initial bundle
   const pdfjsLib = await import('pdfjs-dist');
 
-  // Set worker — use CDN worker that matches the installed version
+  // Point to the locally bundled worker (no CDN, no version mismatch)
   if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
   }
 
   const arrayBuffer = await file.arrayBuffer();

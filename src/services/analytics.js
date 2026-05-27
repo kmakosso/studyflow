@@ -3,11 +3,13 @@ import { startOfWeek, endOfWeek, isWithinInterval, subDays, format, differenceIn
 import { fr } from 'date-fns/locale';
 
 export async function computeStats() {
-  const [sessions, assignments, exams, subjects] = await Promise.all([
+  const [sessions, assignments, exams, subjects, grades, revisions] = await Promise.all([
     db.all('pomodoro'),
     db.all('assignments'),
     db.all('exams'),
     db.all('subjects'),
+    db.all('grades'),
+    db.all('revisions'),
   ]);
 
   const now       = new Date();
@@ -33,12 +35,24 @@ export async function computeStats() {
     };
   });
 
+  // Last 30 days productivity
+  const last30 = Array.from({ length: 30 }, (_, i) => {
+    const day     = subDays(now, 29 - i);
+    const dateStr = format(day, 'yyyy-MM-dd');
+    const daySess = sessions.filter(s => (s.completedAt || s.date || '').startsWith(dateStr));
+    return {
+      date:    dateStr,
+      label:   format(day, 'd/M'),
+      minutes: daySess.reduce((a, s) => a + (s.duration || 25), 0),
+      count:   daySess.length,
+    };
+  });
+
   // Assignment stats
   const done    = assignments.filter(a => a.status === 'done');
   const pending = assignments.filter(a => a.status !== 'done');
   const overdue = pending.filter(a => new Date(a.dueDate) < now);
 
-  // Average days late (done assignments that were completed after due date — approximate)
   const avgLate = overdue.length > 0
     ? overdue.reduce((s, a) => s + differenceInDays(now, new Date(a.dueDate)), 0) / overdue.length
     : 0;
@@ -64,10 +78,39 @@ export async function computeStats() {
     ? futureExams.reduce((s, e) => s + differenceInDays(new Date(e.date), now), 0) / futureExams.length
     : null;
 
+  // Grade evolution — average per subject over time (sorted by date)
+  const gradesBySubject = {};
+  for (const g of grades) {
+    if (!g.subjectId || g.value == null) continue;
+    if (!gradesBySubject[g.subjectId]) gradesBySubject[g.subjectId] = [];
+    gradesBySubject[g.subjectId].push({ date: g.date || g.createdAt || '', value: parseFloat(g.value) });
+  }
+  const gradeEvolution = subjects
+    .filter(s => gradesBySubject[s.id]?.length > 0)
+    .map(s => ({
+      id:     s.id,
+      name:   s.name,
+      color:  s.color,
+      points: gradesBySubject[s.id]
+        .filter(p => p.date)
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .slice(-12), // last 12 grades per subject
+    }));
+
+  // SRS (revisions) status breakdown
+  const srsStatus = {
+    unseen:   revisions.filter(r => r.status === 'unseen').length,
+    learning: revisions.filter(r => r.status === 'learning').length,
+    review:   revisions.filter(r => !['unseen', 'learning', 'mastered'].includes(r.status)).length,
+    mastered: revisions.filter(r => r.status === 'mastered').length,
+    total:    revisions.length,
+  };
+
   return {
     week: { minutes: totalMinWeek, sessions: weekSessions.length },
     allTime: { minutes: totalMinAll, sessions: sessions.length },
     last7,
+    last30,
     assignments: {
       total: assignments.length,
       done: done.length,
@@ -78,7 +121,32 @@ export async function computeStats() {
     },
     exams: { upcoming: futureExams.length, avgDays: avgDaysToExam ? Math.round(avgDaysToExam) : null },
     subjectStats,
+    gradeEvolution,
+    srsStatus,
   };
+}
+
+/** Compute current study streak (consecutive days with ≥1 pomodoro session). */
+export async function computeStreak() {
+  const sessions = await db.all('pomodoro');
+  const activeDays = new Set(
+    sessions
+      .map(s => (s.completedAt || s.date || '').slice(0, 10))
+      .filter(Boolean)
+  );
+
+  const today = format(new Date(), 'yyyy-MM-dd');
+  let day     = new Date();
+
+  // If today has no session yet, start counting from yesterday (streak not broken)
+  if (!activeDays.has(today)) day = subDays(day, 1);
+
+  let streak = 0;
+  while (activeDays.has(format(day, 'yyyy-MM-dd'))) {
+    streak++;
+    day = subDays(day, 1);
+  }
+  return streak;
 }
 
 export function fmtMinutes(min) {

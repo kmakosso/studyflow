@@ -51,7 +51,6 @@ function DocCard({ doc, subjects, onAnalyze, onDelete, onView }) {
       borderRadius:12, padding:16, display:'flex', flexDirection:'column', gap:10,
       borderTop: subj ? `3px solid ${subj.color}` : '3px solid var(--border)',
     }}>
-      {/* Header */}
       <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
         <div style={{
           width:38, height:38, borderRadius:8, flexShrink:0,
@@ -83,7 +82,6 @@ function DocCard({ doc, subjects, onAnalyze, onDelete, onView }) {
         </button>
       </div>
 
-      {/* Preview */}
       {doc.textPreview && (
         <p style={{
           margin:0, fontSize:11.5, color:'var(--muted)', lineHeight:1.5,
@@ -93,7 +91,6 @@ function DocCard({ doc, subjects, onAnalyze, onDelete, onView }) {
         </p>
       )}
 
-      {/* AI summary */}
       {doc.aiSummary && (
         <div style={{ backgroundColor:'var(--surface)', borderRadius:8, border:'1px solid var(--border)', padding:'8px 12px' }}>
           <p style={{ margin:'0 0 4px', fontSize:11, fontWeight:700, color:'var(--primary)', textTransform:'uppercase', letterSpacing:'0.05em' }}>
@@ -105,7 +102,6 @@ function DocCard({ doc, subjects, onAnalyze, onDelete, onView }) {
         </div>
       )}
 
-      {/* Actions */}
       <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
         {doc.text && (
           <button onClick={() => onView(doc)} style={{
@@ -215,6 +211,8 @@ export default function Library() {
   const [showSetup, setShowSetup] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importErr, setImportErr] = useState('');
+  const [importProgress, setImportProgress] = useState('');
+  const [dragging,  setDragging]  = useState(false);
 
   const [consentDoc,  setConsentDoc]  = useState(null);
   const [consentTask, setConsentTask] = useState(null);
@@ -227,7 +225,6 @@ export default function Library() {
 
   const fileInputRef = useRef(null);
 
-  // Subject filter from URL param (e.g. /library?subject=<id>)
   const filterSubjectId = searchParams.get('subject') || null;
   const setFilter = id => id ? setSearchParams({ subject:id }) : setSearchParams({});
 
@@ -240,29 +237,54 @@ export default function Library() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { claude.hasApiKey().then(setHasKey); }, []);
 
-  /* Current subject metadata */
   const activeSubject = filterSubjectId ? subjects.find(s => s.id === filterSubjectId) : null;
 
-  /* Import */
-  const handleFileSelect = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImporting(true); setImportErr('');
-    try {
-      const parsed = await importDocument(file);
-      // Pre-assign subjectId if we're in a subject context
-      if (filterSubjectId) parsed.subjectId = filterSubjectId;
-      await db.put('documents', parsed);
-      await load();
-    } catch (err) {
-      setImportErr(err.message || 'Erreur lors de l\'import');
-    } finally {
-      setImporting(false);
-      e.target.value = '';
+  /* ── Process multiple files ───────────────────────────────────── */
+  const processFiles = async (files) => {
+    if (!files.length) return;
+    setImporting(true); setImportErr(''); setImportProgress('');
+    let errors = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (files.length > 1) setImportProgress(`${i + 1}/${files.length} — ${file.name}`);
+      try {
+        const parsed = await importDocument(file);
+        if (filterSubjectId) parsed.subjectId = filterSubjectId;
+        await db.put('documents', parsed);
+      } catch (err) {
+        errors.push(`${file.name} : ${err.message}`);
+      }
     }
+    await load();
+    setImporting(false);
+    setImportProgress('');
+    if (errors.length) setImportErr(errors.join(' · '));
   };
 
-  /* Analysis */
+  const handleFileSelect = async (e) => {
+    const files = Array.from(e.target.files || []);
+    await processFiles(files);
+    e.target.value = '';
+  };
+
+  /* ── Drag & drop handlers ─────────────────────────────────────── */
+  const handleDragOver  = (e) => { e.preventDefault(); setDragging(true); };
+  const handleDragEnter = (e) => { e.preventDefault(); setDragging(true); };
+  const handleDragLeave = (e) => {
+    // Only clear if leaving the top-level container
+    if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false);
+  };
+  const handleDrop = async (e) => {
+    e.preventDefault(); setDragging(false);
+    const files = Array.from(e.dataTransfer.files).filter(f => {
+      const ext = f.name.split('.').pop().toLowerCase();
+      return ['pdf','docx','doc','txt','md','markdown','csv','png','jpg','jpeg','webp'].includes(ext);
+    });
+    if (!files.length) { setImportErr('Format non supporté. Acceptés : PDF, DOCX, TXT, MD, images.'); return; }
+    await processFiles(files);
+  };
+
+  /* ── Analysis ──────────────────────────────────────────────────── */
   const handleAnalyze = (doc, taskId) => {
     if (!hasKey) { setShowSetup(true); return; }
     setConsentDoc(doc);
@@ -324,7 +346,6 @@ export default function Library() {
     await load();
   };
 
-  /* Filtered list */
   const filtered = documents.filter(d => {
     const matchSubject = filterSubjectId ? d.subjectId === filterSubjectId : true;
     const matchSearch  = search
@@ -334,14 +355,35 @@ export default function Library() {
     return matchSubject && matchSearch;
   });
 
-  /* Counts per subject for tab badges */
   const countBySubject = {};
   for (const d of documents) {
     if (d.subjectId) countBySubject[d.subjectId] = (countBySubject[d.subjectId]||0)+1;
   }
 
   return (
-    <div style={{ height:'100%', display:'flex', flexDirection:'column', backgroundColor:'var(--bg)', overflow:'hidden' }}>
+    <div
+      style={{ height:'100%', display:'flex', flexDirection:'column', backgroundColor:'var(--bg)', overflow:'hidden', position:'relative' }}
+      onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* ── Drag overlay ── */}
+      {dragging && (
+        <div style={{
+          position:'absolute', inset:0, zIndex:50,
+          backgroundColor:'var(--primary)18',
+          border:'3px dashed var(--primary)',
+          borderRadius:12,
+          display:'flex', flexDirection:'column',
+          alignItems:'center', justifyContent:'center', gap:12,
+          pointerEvents:'none',
+        }}>
+          <Upload size={40} color="var(--primary)" />
+          <p style={{ fontSize:18, fontWeight:700, color:'var(--primary)' }}>Dépose tes fichiers ici</p>
+          <p style={{ fontSize:13, color:'var(--primary)', opacity:0.7 }}>PDF, DOCX, TXT, images…</p>
+        </div>
+      )}
 
       {/* ── Header ── */}
       <div style={{
@@ -352,14 +394,11 @@ export default function Library() {
         <div>
           <h1 style={{ margin:0, fontSize:18, fontWeight:700 }}>
             {activeSubject ? (
-              <span>
-                <span style={{ color:activeSubject.color }}>●</span>
-                {' '}Bibliothèque — {activeSubject.name}
-              </span>
+              <span><span style={{ color:activeSubject.color }}>●</span>{' '}Bibliothèque — {activeSubject.name}</span>
             ) : 'Bibliothèque'}
           </h1>
           <p style={{ margin:0, fontSize:12, color:'var(--muted)' }}>
-            {filtered.length} document{filtered.length!==1?'s':''}{filterSubjectId ? ` dans ${activeSubject?.name}` : ' au total'} · Analyse IA avec Claude
+            {filtered.length} document{filtered.length!==1?'s':''} · Glisse-dépose ou clique pour importer
           </p>
         </div>
         <div style={{ display:'flex', gap:8 }}>
@@ -372,16 +411,26 @@ export default function Library() {
               <Sparkles size={14}/> Config API
             </button>
           )}
-          <input ref={fileInputRef} type="file" accept={ACCEPTED_TYPES}
-            onChange={handleFileSelect} style={{ display:'none' }}/>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_TYPES}
+            multiple
+            onChange={handleFileSelect}
+            style={{ display:'none' }}
+          />
           <button onClick={() => fileInputRef.current?.click()} disabled={importing} style={{
             display:'flex', alignItems:'center', gap:6,
             padding:'8px 16px', borderRadius:10, border:'none',
             background:'var(--primary)', color:'white',
             fontSize:13, fontWeight:600, cursor:'pointer',
           }}>
-            {importing ? <Loader size={14} style={{ animation:'spin 1s linear infinite' }}/> : <Upload size={14}/>}
-            {importing ? 'Import…' : filterSubjectId ? `Importer dans ${activeSubject?.name}` : 'Importer'}
+            {importing
+              ? <Loader size={14} style={{ animation:'spin 1s linear infinite' }}/>
+              : <Upload size={14}/>}
+            {importing
+              ? (importProgress || 'Import…')
+              : filterSubjectId ? `Importer dans ${activeSubject?.name}` : 'Importer'}
           </button>
         </div>
       </div>
@@ -434,7 +483,7 @@ export default function Library() {
             <p style={{ margin:0, fontSize:14 }}>
               {filterSubjectId
                 ? `Aucun document dans ${activeSubject?.name}`
-                : search ? 'Aucun document trouvé' : 'Aucun document importé'}
+                : search ? 'Aucun document trouvé' : 'Glisse-dépose des fichiers ou clique sur Importer'}
             </p>
             {!search && (
               <button onClick={() => fileInputRef.current?.click()} style={{

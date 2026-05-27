@@ -1,33 +1,114 @@
-import { useState, useEffect } from 'react';
-import { Outlet } from 'react-router-dom';
-import { Menu, Search, LogIn, LogOut } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Outlet, useNavigate } from 'react-router-dom';
+import { Menu, Search, LogIn, LogOut, Sun, Moon, Keyboard } from 'lucide-react';
 import Sidebar from './Sidebar';
 import GlobalSearch from '../shared/GlobalSearch';
 import SmartBanner from '../shared/SmartBanner';
 import SyncBadge from '../shared/SyncBadge';
 import AuthModal from '../shared/AuthModal';
+import ShortcutsModal from '../shared/ShortcutsModal';
 import { usePomodoro } from '../../contexts/PomodoroContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { startReminderDaemon } from '../../services/notifications';
+import { computeStreak } from '../../services/analytics';
+
+/* ── Theme helpers ───────────────────────────────────────────────── */
+function applyTheme(theme) {
+  document.documentElement.classList.toggle('light', theme === 'light');
+}
+function getSavedTheme() {
+  return localStorage.getItem('sf_theme') || 'dark';
+}
+
+/* ── Streak badge ────────────────────────────────────────────────── */
+function StreakBadge({ streak }) {
+  if (streak < 1) return null;
+  return (
+    <div title={`${streak} jour${streak > 1 ? 's' : ''} consécutif${streak > 1 ? 's' : ''} d'étude`} style={{
+      display: 'flex', alignItems: 'center', gap: 4,
+      padding: '3px 10px', borderRadius: 20,
+      backgroundColor: '#f59e0b22', border: '1px solid #f59e0b44',
+      fontSize: 12, fontWeight: 700, color: '#f59e0b',
+      cursor: 'default', userSelect: 'none',
+    }}>
+      🔥 {streak}
+    </div>
+  );
+}
 
 export default function Layout() {
-  const [collapsed,   setCollapsed]   = useState(false);
-  const [searchOpen,  setSearchOpen]  = useState(false);
-  const [authOpen,    setAuthOpen]    = useState(false);
-  const { focusMode, setFocusMode }   = usePomodoro();
+  const [collapsed,      setCollapsed]      = useState(false);
+  const [searchOpen,     setSearchOpen]     = useState(false);
+  const [authOpen,       setAuthOpen]       = useState(false);
+  const [shortcutsOpen,  setShortcutsOpen]  = useState(false);
+  const [theme,          setTheme]          = useState(getSavedTheme);
+  const [streak,         setStreak]         = useState(0);
+  const [gPressed,       setGPressed]       = useState(false); // for g+key nav
+
+  const { focusMode, setFocusMode } = usePomodoro();
   const { user, logout, isConfigured } = useAuth();
+  const navigate = useNavigate();
 
-  // Ctrl+K / Cmd+K to open search
+  /* ── Apply theme on mount and change ─────────────────────────── */
+  useEffect(() => { applyTheme(theme); }, [theme]);
+
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    localStorage.setItem('sf_theme', next);
+  };
+
+  /* ── Reminder daemon ─────────────────────────────────────────── */
+  useEffect(() => startReminderDaemon(), []);
+
+  /* ── Streak ─────────────────────────────────────────────────── */
+  useEffect(() => { computeStreak().then(setStreak); }, []);
+
+  /* ── Keyboard shortcuts ─────────────────────────────────────── */
+  const NAV_SHORTCUTS = {
+    d: '/', r: '/revision', p: '/pomodoro',
+    a: '/analytics', l: '/library', e: '/exams',
+    s: '/schedule', h: '/assignments', n: '/reminders',
+  };
+
+  const handleKeyDown = useCallback((e) => {
+    const tag = document.activeElement?.tagName;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+
+    // Ctrl+K — search
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault(); setSearchOpen(true); return;
+    }
+
+    // ? — shortcuts help
+    if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
+      setShortcutsOpen(o => !o); return;
+    }
+
+    // Esc — close modals
+    if (e.key === 'Escape') {
+      setSearchOpen(false); setShortcutsOpen(false); return;
+    }
+
+    // g + letter — navigate
+    if (e.key === 'g' && !e.ctrlKey && !e.metaKey) {
+      setGPressed(true);
+      setTimeout(() => setGPressed(false), 1500);
+      return;
+    }
+    if (gPressed && NAV_SHORTCUTS[e.key]) {
+      e.preventDefault();
+      navigate(NAV_SHORTCUTS[e.key]);
+      setGPressed(false);
+    }
+  }, [gPressed, navigate]);
+
   useEffect(() => {
-    const handler = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-        e.preventDefault();
-        setSearchOpen(true);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
 
+  /* ── Focus mode ─────────────────────────────────────────────── */
   if (focusMode) {
     return (
       <div style={{
@@ -55,6 +136,7 @@ export default function Layout() {
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', backgroundColor: 'var(--bg)' }}>
       <Sidebar collapsed={collapsed} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+
         {/* Top bar */}
         <header style={{
           display: 'flex', alignItems: 'center', gap: 8,
@@ -84,14 +166,35 @@ export default function Layout() {
 
           {/* Right-side controls */}
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-            {/* Sync status (only when cloud is configured) */}
+
+            {/* Streak badge */}
+            <StreakBadge streak={streak} />
+
+            {/* Shortcuts help */}
+            <button
+              onClick={() => setShortcutsOpen(true)}
+              title="Raccourcis clavier (?)"
+              style={{ background: 'none', border: 'none', color: 'var(--muted)', padding: 6, borderRadius: 6, display: 'flex', cursor: 'pointer' }}
+            >
+              <Keyboard size={16} />
+            </button>
+
+            {/* Dark / light toggle */}
+            <button
+              onClick={toggleTheme}
+              title={theme === 'dark' ? 'Passer en mode clair' : 'Passer en mode sombre'}
+              style={{ background: 'none', border: 'none', color: 'var(--muted)', padding: 6, borderRadius: 6, display: 'flex', cursor: 'pointer' }}
+            >
+              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+
+            {/* Sync status */}
             {isConfigured && (
               <SyncBadge onClick={user ? undefined : () => setAuthOpen(true)} />
             )}
 
-            {/* User avatar / sign-in button */}
+            {/* User */}
             {user ? (
-              /* Logged-in: avatar + sign-out */
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {user.user_metadata?.avatar_url ? (
                   <img
@@ -123,7 +226,6 @@ export default function Layout() {
                 </button>
               </div>
             ) : isConfigured ? (
-              /* Not logged in + Supabase configured: sign-in button */
               <button
                 onClick={() => setAuthOpen(true)}
                 style={{
@@ -139,16 +241,15 @@ export default function Layout() {
           </div>
         </header>
 
-        {/* Smart banners */}
         <SmartBanner />
 
-        {/* Page content */}
         <main style={{ flex: 1, overflowY: 'auto', padding: '24px 28px' }}>
           <Outlet />
         </main>
       </div>
 
-      {searchOpen && <GlobalSearch onClose={() => setSearchOpen(false)} />}
+      {searchOpen    && <GlobalSearch onClose={() => setSearchOpen(false)} />}
+      {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
       <AuthModal isOpen={authOpen} onClose={() => setAuthOpen(false)} />
     </div>
   );

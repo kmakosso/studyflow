@@ -19,6 +19,18 @@
   --info:         #3b82f6;
 }
 
+/* ── Light mode ─────────────────────────────────────────────────── */
+.light {
+  --bg:           #f2f2f8;
+  --surface:      #ffffff;
+  --card:         #e9e9f4;
+  --card-hover:   #e0e0ec;
+  --border:       #d4d4e6;
+  --text:         #1a1a2e;
+  --muted:        #7070a0;
+  --primary-dim:  #7c6af733;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body, #root {
