@@ -331,6 +331,38 @@ export async function* streamGrok({ messages, system, model = 'grok-3', maxToken
   }
 }
 
+/* ─── Vision (multimodal) with academic context ─────────────────── */
+/* Sends an image + text to Claude using the multimodal message format.
+ * The image data (base64) is NOT stored in conversation history — only text. */
+
+export async function chatVisionWithContext(userText, imageBase64, imageType = 'image/jpeg', history = []) {
+  const contextBlock = await buildAcademicContext();
+  const system = buildSystemPrompt(contextBlock,
+    '\nTu peux analyser des images (photos de notes, tableaux, exercices, diagrammes). ' +
+    'Extrais le contenu, corrige si nécessaire, et propose des fiches ou explications adaptées.');
+
+  const visionMessage = {
+    role: 'user',
+    content: [
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: imageType, data: imageBase64 },
+      },
+      {
+        type: 'text',
+        text: userText || 'Analyse cette image. Explique ce que tu vois et propose une aide académique adaptée.',
+      },
+    ],
+  };
+
+  // streamMessage passes messages directly to the API — both string and array content are valid
+  return streamMessage({
+    messages: [...history, visionMessage],
+    system,
+    maxTokens: 4096,
+  });
+}
+
 /* ─── One-shot completion (non-streaming) ────────────────────────── */
 
 export async function complete({ messages, system, maxTokens = 4096 }) {
@@ -471,7 +503,7 @@ Tiens compte des examens à venir, devoirs urgents et révisions en retard.`,
 
 /* ─── Flashcard generation (JSON output) ────────────────────────── */
 
-export async function generateFlashcardsFromText(text, subjectName = '') {
+export async function generateFlashcardsFromText(text, subjectName = '', count = 15) {
   const system = `Tu es un générateur de flashcards académiques.
 Tu réponds UNIQUEMENT avec un tableau JSON valide, sans texte avant ou après.
 Format : [{"front":"question ou concept","back":"réponse ou explication","difficulty":"easy|medium|hard"}]`;
@@ -480,11 +512,11 @@ Format : [{"front":"question ou concept","back":"réponse ou explication","diffi
     messages: [
       {
         role: 'user',
-        content: `Génère 15 flashcards de révision pour la matière "${subjectName}" à partir de ce contenu :\n\n${text.slice(0, 40000)}`,
+        content: `Génère ${count} flashcards de révision pour la matière "${subjectName}" à partir de ce contenu :\n\n${text.slice(0, 40000)}`,
       },
     ],
     system,
-    maxTokens: 3000,
+    maxTokens: 4000,
   });
 
   try {
@@ -531,6 +563,7 @@ export const claude = {
   streamGrok,
   chatWithContext,
   chatWithSubjectContext,
+  chatVisionWithContext,
   analyzeDocument,
   generateStudyPlan,
   generateFlashcardsFromText,

@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Plus, Pencil, Trash2, RotateCcw, ChevronRight, Share2, FileDown } from 'lucide-react';
+import { Plus, Pencil, Trash2, RotateCcw, ChevronRight, Share2, FileDown, Sparkles } from 'lucide-react';
 import { useRevision } from '../hooks/useRevision';
 import { useSubjects } from '../hooks/useSubjects';
 import { computeNextReview, getStatusColor, getStatusLabel, isDue } from '../services/srs';
 import Modal from '../components/shared/Modal';
 import ShareModal from '../components/shared/ShareModal';
+import AIFlashcardModal from '../components/AIFlashcardModal';
 import { printFlashcards } from '../services/printService';
 
 function CardForm({ initial, subjects, onSubmit, onCancel }) {
@@ -114,13 +115,15 @@ function StudySession({ cards, onRate, onExit }) {
 }
 
 export default function Revision() {
-  const { cards, loading, add, update, remove, dueToday } = useRevision();
+  const { cards, loading, add, update, remove, dueToday, reload } = useRevision();
   const { subjects, byId } = useSubjects();
   const [open, setOpen]           = useState(false);
   const [editing, setEditing]     = useState(null);
   const [studying, setStudying]   = useState(false);
   const [subFilter, setSubFilter] = useState('all');
   const [shareOpen, setShareOpen] = useState(false);
+  const [showAI,   setShowAI]     = useState(false);
+  const [aiNote,   setAiNote]     = useState('');
 
   const due = dueToday();
 
@@ -171,6 +174,9 @@ export default function Revision() {
               <FileDown size={14} /> Exporter PDF
             </button>
           )}
+          <button className="btn-ghost" style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={() => setShowAI(true)}>
+            <Sparkles size={14} /> IA
+          </button>
           <button className="btn-ghost" style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={() => { setEditing(null); setOpen(true); }}>
             <Plus size={14} /> Créer
           </button>
@@ -250,6 +256,31 @@ export default function Revision() {
           onClose={() => setShareOpen(false)}
         />
       </Modal>
+
+      {showAI && (
+        <AIFlashcardModal
+          defaultSubjectId={subFilter !== 'all' ? subFilter : null}
+          onClose={() => setShowAI(false)}
+          onSaved={(count) => {
+            setShowAI(false);
+            reload();
+            setAiNote(`✅ ${count} fiche${count > 1 ? 's' : ''} générée${count > 1 ? 's' : ''} et sauvegardée${count > 1 ? 's' : ''} !`);
+            setTimeout(() => setAiNote(''), 4000);
+          }}
+        />
+      )}
+
+      {aiNote && (
+        <div style={{
+          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+          backgroundColor: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 12, padding: '10px 22px', fontSize: 13.5, fontWeight: 600,
+          boxShadow: '0 4px 24px rgba(0,0,0,0.2)', zIndex: 999,
+          color: 'var(--success)',
+        }}>
+          {aiNote}
+        </div>
+      )}
     </div>
   );
 }

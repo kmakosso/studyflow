@@ -1,9 +1,9 @@
 /* ── Assistant.jsx — Claude-powered Academic Assistant ── */
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  Send, RefreshCw, Bot, Key, Settings, Plus,
+  Send, Bot, Key, Settings, Plus,
   MessageSquare, Trash2, ChevronLeft, ChevronRight,
-  BookOpen, Save, Calendar, Bell,
+  BookOpen, Mic, MicOff, ImagePlus, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { claude } from '../services/claudeService';
 import { useIntelligence } from '../contexts/IntelligenceContext';
@@ -105,7 +105,7 @@ function formatInline(text) {
 }
 
 /* ─── Bubbles ────────────────────────────────────────────────────── */
-function AssistantBubble({ text, streaming, actions, onAction, subjects, activeSubjectId }) {
+function AssistantBubble({ text, streaming, actions, onAction, subjects, activeSubjectId, onSpeak, speaking }) {
   return (
     <div style={{ display:'flex', gap:10, alignItems:'flex-start', marginBottom:20 }}>
       <div style={{
@@ -120,6 +120,7 @@ function AssistantBubble({ text, streaming, actions, onAction, subjects, activeS
         <div style={{
           background:'var(--card)', border:'1px solid var(--border)',
           borderRadius:'4px 14px 14px 14px', padding:'12px 16px', maxWidth:640,
+          position:'relative',
         }}>
           {renderMarkdown(text)}
           {streaming && (
@@ -128,6 +129,24 @@ function AssistantBubble({ text, streaming, actions, onAction, subjects, activeS
               backgroundColor:'var(--primary)', borderRadius:2,
               animation:'blink 0.8s step-end infinite', verticalAlign:'text-bottom',
             }}/>
+          )}
+          {/* TTS button */}
+          {!streaming && text && onSpeak && (
+            <button
+              onClick={onSpeak}
+              title={speaking ? 'Arrêter la lecture' : 'Écouter la réponse'}
+              style={{
+                position:'absolute', top:8, right:8,
+                background:'none', border:'none', cursor:'pointer', padding:4, borderRadius:6,
+                color: speaking ? 'var(--primary)' : 'var(--muted)',
+                opacity: speaking ? 1 : 0.5,
+                transition:'opacity 0.15s, color 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.opacity = '1'; }}
+              onMouseLeave={e => { e.currentTarget.style.opacity = speaking ? '1' : '0.5'; }}
+            >
+              {speaking ? <Volume2 size={13}/> : <VolumeX size={13}/>}
+            </button>
           )}
         </div>
         {/* Action buttons */}
@@ -155,16 +174,23 @@ function AssistantBubble({ text, streaming, actions, onAction, subjects, activeS
   );
 }
 
-function UserBubble({ text }) {
+function UserBubble({ text, imagePreview }) {
   return (
-    <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:14 }}>
+    <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:14, flexDirection:'column', alignItems:'flex-end', gap:6 }}>
+      {imagePreview && (
+        <img
+          src={imagePreview}
+          alt="Image jointe"
+          style={{ maxWidth:220, maxHeight:160, borderRadius:10, border:'2px solid var(--primary)44', objectFit:'cover' }}
+        />
+      )}
       <div style={{
         background:'var(--primary)', color:'white',
         borderRadius:'14px 4px 14px 14px',
         padding:'9px 14px', maxWidth:440,
         fontSize:13.5, lineHeight:1.45, whiteSpace:'pre-wrap',
       }}>
-        {text}
+        {text || '📷 Analyse cette image'}
       </div>
     </div>
   );
@@ -314,11 +340,16 @@ export default function Assistant() {
   const [conversations,   setConversations]   = useState([]);
   const [activeConvId,    setActiveConvId]    = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [notification, setNotification] = useState('');
+  const [notification,   setNotification]   = useState('');
+  const [attachedImage,  setAttachedImage]  = useState(null);  // { base64, type, preview }
+  const [isListening,    setIsListening]    = useState(false);
+  const [speaking,       setSpeaking]       = useState(null);  // id of message being spoken
 
-  const bottomRef  = useRef(null);
-  const inputRef   = useRef(null);
-  const historyRef = useRef([]);
+  const bottomRef     = useRef(null);
+  const inputRef      = useRef(null);
+  const historyRef    = useRef([]);
+  const fileInputRef  = useRef(null);
+  const recognitionRef = useRef(null);
 
   /* ── Init ── */
   useEffect(() => {
@@ -382,6 +413,63 @@ export default function Assistant() {
     await loadConversations();
   };
 
+  /* ── Image attachment ── */
+  const handleImageFile = (file) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = e.target.result;
+      setAttachedImage({ base64: data.split(',')[1], type: file.type, preview: data });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  /* ── Voice recognition ── */
+  const toggleVoice = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { notify('❌ Reconnaissance vocale non supportée sur ce navigateur.'); return; }
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const rec = new SR();
+    rec.lang = 'fr-FR';
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.onstart = () => setIsListening(true);
+    rec.onend   = () => setIsListening(false);
+    rec.onresult = (e) => {
+      const transcript = Array.from(e.results).map(r => r[0].transcript).join('');
+      setInput(transcript);
+    };
+    rec.onerror = (e) => {
+      setIsListening(false);
+      if (e.error !== 'no-speech') notify(`❌ Erreur micro : ${e.error}`);
+    };
+    recognitionRef.current = rec;
+    rec.start();
+  };
+
+  /* ── Text-to-speech ── */
+  const speakText = (text, msgId) => {
+    if (!('speechSynthesis' in window)) { notify('❌ Synthèse vocale non supportée.'); return; }
+    window.speechSynthesis.cancel();
+    if (speaking === msgId) { setSpeaking(null); return; }
+    const clean = text
+      .replace(/\*\*/g, '').replace(/`[^`]*`/g, '').replace(/#{1,3} /g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').slice(0, 2500);
+    const utt = new SpeechSynthesisUtterance(clean);
+    utt.lang = 'fr-FR';
+    utt.rate = 1.05;
+    utt.onend  = () => setSpeaking(null);
+    utt.onerror = () => setSpeaking(null);
+    setSpeaking(msgId);
+    window.speechSynthesis.speak(utt);
+  };
+
   /* ── Handle direct actions ── */
   const handleAction = async (action, subjectId) => {
     try {
@@ -423,17 +511,23 @@ export default function Assistant() {
   /* ── Send message ── */
   const sendMessage = useCallback(async (text) => {
     const trimmed = (text ?? input).trim();
-    if (!trimmed || streaming || loading) return;
+    const isVision = !!attachedImage;
+    if ((!trimmed && !isVision) || streaming || loading) return;
+
     const activeKey = provider === 'grok' ? hasGrok : hasKey;
     if (!activeKey) { setShowSetup(true); return; }
+    if (isVision && !hasKey) { notify('❌ Vision IA nécessite une clé Claude (Anthropic).'); setShowSetup(true); return; }
 
     setInput('');
-    const userMsg = { id: crypto.randomUUID(), role:'user', text:trimmed };
+    // Capture image before clearing state
+    const imgSnapshot = attachedImage;
+    if (isVision) setAttachedImage(null);
+
+    const displayText = trimmed || (isVision ? '📷 Analyse cette image' : '');
+    const userMsg = { id: crypto.randomUUID(), role:'user', text: displayText, imagePreview: isVision ? imgSnapshot.preview : null };
     const newMsgs = [...messages, userMsg];
     setMessages(newMsgs);
     setLoading(true);
-
-    historyRef.current = [...historyRef.current, { role:'user', content:trimmed }];
 
     const assistantId = crypto.randomUUID();
     let   fullText    = '';
@@ -443,14 +537,20 @@ export default function Assistant() {
       setLoading(false);
       setStreaming(true);
 
-      // Build system prompt for Grok (same academic context)
       let stream;
-      if (provider === 'grok') {
+      if (isVision) {
+        // Vision: history does NOT include current message — chatVisionWithContext constructs it
+        stream = await claude.chatVisionWithContext(trimmed, imgSnapshot.base64, imgSnapshot.type, historyRef.current);
+        // Add text-only marker to history
+        historyRef.current = [...historyRef.current, { role:'user', content: trimmed + ' [image jointe]' }];
+      } else if (provider === 'grok') {
+        historyRef.current = [...historyRef.current, { role:'user', content:trimmed }];
         const { buildAcademicContext, streamGrok } = await import('../services/claudeService');
         const contextBlock = await buildAcademicContext();
         const system = `Tu es l'assistant académique personnel de cet étudiant dans StudyFlow.\nTu réponds TOUJOURS en français, de façon précise et orientée action.\nCONTEXTE ACADÉMIQUE :\n${contextBlock}`;
         stream = streamGrok({ messages: historyRef.current, system, model: grokModel });
       } else {
+        historyRef.current = [...historyRef.current, { role:'user', content:trimmed }];
         stream = activeSubjectId
           ? await claude.chatWithSubjectContext(historyRef.current, activeSubjectId)
           : await claude.chatWithContext(historyRef.current);
@@ -468,8 +568,9 @@ export default function Assistant() {
 
       historyRef.current = [...historyRef.current, { role:'assistant', content:fullText }];
 
-      // Auto-save conversation
-      const finalMsgs = [...newMsgs, { id:assistantId, role:'assistant', text:fullText, actions }];
+      // Auto-save conversation (strip imagePreview data — too large for IndexedDB)
+      const finalMsgs = [...newMsgs, { id:assistantId, role:'assistant', text:fullText, actions }]
+        .map(({ imagePreview: _img, ...rest }) => rest);
       const savedId = await saveConversation(finalMsgs, activeConvId);
       if (!activeConvId) setActiveConvId(savedId);
 
@@ -488,10 +589,17 @@ export default function Assistant() {
       setStreaming(false);
       inputRef.current?.focus();
     }
-  }, [input, streaming, loading, hasKey, messages, activeSubjectId, activeConvId, saveConversation]);
+  }, [input, streaming, loading, hasKey, hasGrok, provider, grokModel, attachedImage, messages, activeSubjectId, activeConvId, saveConversation]);
 
   const handleKey = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  };
+
+  // Stop TTS when switching conversations
+  const loadConversationWithStop = (conv) => {
+    window.speechSynthesis?.cancel();
+    setSpeaking(null);
+    loadConversation(conv);
   };
 
   const showQuickPrompts = messages.length <= 1 && !streaming && !loading;
@@ -505,7 +613,7 @@ export default function Assistant() {
       <HistorySidebar
         conversations={conversations}
         activeId={activeConvId}
-        onSelect={loadConversation}
+        onSelect={loadConversationWithStop}
         onNew={newConversation}
         onDelete={deleteConversation}
         collapsed={sidebarCollapsed}
@@ -637,10 +745,13 @@ export default function Assistant() {
         <div style={{ flex:1, overflowY:'auto', padding:'16px 16px 8px' }}>
           {messages.map(msg =>
             msg.role === 'user'
-              ? <UserBubble key={msg.id} text={msg.text}/>
+              ? <UserBubble key={msg.id} text={msg.text} imagePreview={msg.imagePreview}/>
               : <AssistantBubble key={msg.id} text={msg.text} streaming={msg.streaming}
                   actions={msg.actions} onAction={handleAction} subjects={subjects}
-                  activeSubjectId={activeSubjectId}/>
+                  activeSubjectId={activeSubjectId}
+                  speaking={speaking === msg.id}
+                  onSpeak={() => speakText(msg.text, msg.id)}
+                />
           )}
           {loading && <TypingDots/>}
           <div ref={bottomRef}/>
@@ -668,22 +779,53 @@ export default function Assistant() {
 
         {/* Input bar */}
         <div style={{ padding:'8px 16px 14px', borderTop:'1px solid var(--border)', backgroundColor:'var(--surface)', flexShrink:0 }}>
+
+          {/* Image preview */}
+          {attachedImage && (
+            <div style={{ marginBottom:8, display:'flex', alignItems:'flex-start', gap:8 }}>
+              <div style={{ position:'relative', display:'inline-block' }}>
+                <img
+                  src={attachedImage.preview}
+                  alt="Aperçu"
+                  style={{ maxWidth:120, maxHeight:90, borderRadius:8, border:'2px solid var(--primary)44', objectFit:'cover', display:'block' }}
+                />
+                <button
+                  onClick={() => setAttachedImage(null)}
+                  style={{
+                    position:'absolute', top:-6, right:-6,
+                    width:20, height:20, borderRadius:'50%', border:'none',
+                    background:'#ef4444', color:'white', cursor:'pointer',
+                    display:'flex', alignItems:'center', justifyContent:'center', padding:0,
+                  }}
+                >
+                  <X size={11}/>
+                </button>
+              </div>
+              <span style={{ fontSize:12, color:'var(--muted)', alignSelf:'center' }}>
+                📷 Image jointe — demande à Claude de l'analyser
+              </span>
+            </div>
+          )}
+
           <div style={{
-            display:'flex', gap:8, alignItems:'flex-end',
-            backgroundColor:'var(--card)', border:'1px solid var(--border)',
+            display:'flex', gap:6, alignItems:'flex-end',
+            backgroundColor:'var(--card)', border:`1px solid ${isListening ? '#ef4444' : 'var(--border)'}`,
             borderRadius:14, padding:'8px 8px 8px 14px', transition:'border-color 0.15s',
           }}
-            onFocusCapture={e => e.currentTarget.style.borderColor='var(--primary)'}
-            onBlurCapture={e => e.currentTarget.style.borderColor='var(--border)'}
+            onFocusCapture={e => { if (!isListening) e.currentTarget.style.borderColor='var(--primary)'; }}
+            onBlurCapture={e => { if (!isListening) e.currentTarget.style.borderColor='var(--border)'; }}
           >
             <textarea
               ref={inputRef}
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKey}
-              placeholder={activeKey
-                ? (activeSubjectId ? `Question sur ${activeSubject?.name}…` : 'Pose ta question…')
-                : 'Configure ta clé API pour commencer…'}
+              placeholder={
+                isListening ? '🎙️ Parle maintenant…'
+                : activeKey
+                  ? (attachedImage ? 'Décris ce que tu veux analyser (optionnel)…' : activeSubjectId ? `Question sur ${activeSubject?.name}…` : 'Pose ta question…')
+                  : 'Configure ta clé API pour commencer…'
+              }
               disabled={streaming || loading || activeKey === false}
               rows={1}
               style={{
@@ -698,12 +840,61 @@ export default function Assistant() {
                 e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
               }}
             />
-            <button onClick={() => sendMessage()}
-              disabled={!input.trim() || streaming || loading || activeKey === false}
+
+            {/* Image button — only for Claude (vision) */}
+            {provider !== 'grok' && (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display:'none' }}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleImageFile(f); e.target.value = ''; }}
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Joindre une image"
+                  disabled={streaming || loading}
+                  style={{
+                    width:32, height:32, borderRadius:8, border:'none',
+                    background: attachedImage ? 'var(--primary)22' : 'none',
+                    color: attachedImage ? 'var(--primary)' : 'var(--muted)',
+                    cursor: streaming || loading ? 'default' : 'pointer',
+                    display:'flex', alignItems:'center', justifyContent:'center',
+                    flexShrink:0, transition:'all 0.15s',
+                  }}
+                >
+                  <ImagePlus size={15}/>
+                </button>
+              </>
+            )}
+
+            {/* Mic button */}
+            <button
+              onClick={toggleVoice}
+              title={isListening ? 'Arrêter l\'écoute' : 'Parler à l\'IA'}
+              disabled={streaming || loading}
+              style={{
+                width:32, height:32, borderRadius:8, border:'none',
+                background: isListening ? '#ef444422' : 'none',
+                color: isListening ? '#ef4444' : 'var(--muted)',
+                cursor: streaming || loading ? 'default' : 'pointer',
+                display:'flex', alignItems:'center', justifyContent:'center',
+                flexShrink:0, transition:'all 0.15s',
+                animation: isListening ? 'micPulse 1s ease-in-out infinite' : 'none',
+              }}
+            >
+              {isListening ? <Mic size={15}/> : <MicOff size={15}/>}
+            </button>
+
+            {/* Send button */}
+            <button
+              onClick={() => sendMessage()}
+              disabled={(!input.trim() && !attachedImage) || streaming || loading || activeKey === false}
               style={{
                 width:34, height:34, borderRadius:10, border:'none',
-                background: input.trim() && !streaming && !loading && activeKey ? 'var(--primary)' : 'var(--border)',
-                color:'white', cursor: input.trim() && !streaming && !loading && activeKey ? 'pointer' : 'default',
+                background: (input.trim() || attachedImage) && !streaming && !loading && activeKey ? 'var(--primary)' : 'var(--border)',
+                color:'white', cursor: (input.trim() || attachedImage) && !streaming && !loading && activeKey ? 'pointer' : 'default',
                 display:'flex', alignItems:'center', justifyContent:'center',
                 transition:'background 0.15s', flexShrink:0,
               }}
@@ -712,7 +903,7 @@ export default function Assistant() {
             </button>
           </div>
           <p style={{ margin:'5px 0 0', fontSize:11, color:'var(--muted)', textAlign:'center' }}>
-            Entrée pour envoyer · Shift+Entrée pour nouvelle ligne
+            Entrée pour envoyer · Shift+Entrée pour nouvelle ligne · 📷 image · 🎙️ voix
           </p>
         </div>
       </div>
@@ -728,8 +919,9 @@ export default function Assistant() {
       )}
 
       <style>{`
-        @keyframes pulse { 0%,80%,100%{opacity:.3;transform:scale(.8)} 40%{opacity:1;transform:scale(1)} }
-        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+        @keyframes pulse    { 0%,80%,100%{opacity:.3;transform:scale(.8)} 40%{opacity:1;transform:scale(1)} }
+        @keyframes blink    { 0%,100%{opacity:1} 50%{opacity:0} }
+        @keyframes micPulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
       `}</style>
     </div>
   );
