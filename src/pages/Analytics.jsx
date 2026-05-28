@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useAnalytics } from '../hooks/useAnalytics';
 import { fmtMinutes } from '../services/analytics';
 import { RefreshCw } from 'lucide-react';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 /* ── Stat card ───────────────────────────────────────────────────── */
 function StatCard({ label, value, sub, color }) {
@@ -190,6 +191,7 @@ function SrsDonut({ srs }) {
 export default function Analytics() {
   const { stats, loading, reload } = useAnalytics();
   const [period, setPeriod] = useState(7); // 7 or 30 days
+  const isMobile = useIsMobile();
 
   if (loading) return <div style={{ color: 'var(--muted)' }}>Calcul des statistiques…</div>;
   if (!stats)  return <div style={{ color: 'var(--danger)' }}>Erreur de calcul.</div>;
@@ -240,7 +242,7 @@ export default function Analytics() {
           : <p style={{ color: 'var(--muted)', fontSize: 13 }}>Aucune session sur cette période.</p>}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16, marginBottom: 16 }}>
         {/* Assignment breakdown */}
         <div className="card">
           <p style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>Devoirs</p>

@@ -3,6 +3,7 @@ import {
   User, Clock, Zap, Target, TrendingUp, Star,
   AlertTriangle, RefreshCw, Edit2, Check, X,
 } from 'lucide-react';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { useIntelligence }         from '../contexts/IntelligenceContext';
 import { useAuth }                  from '../contexts/AuthContext';
 import { computeProfile, WORK_TIME_LABELS } from '../services/studentProfile';
@@ -405,6 +406,7 @@ function BadgesGrid({ data }) {
 export default function Profile() {
   const { profile, score, loading, refresh } = useIntelligence();
   const { user }                             = useAuth();
+  const isMobile = useIsMobile();
   const [graph,        setGraph]        = useState([]);
   const [graphLoading, setGraphLoading] = useState(true);
   const [recomputing,  setRecomputing]  = useState(false);
@@ -569,8 +571,8 @@ export default function Profile() {
       />
 
       {/* ── Score + breakdown ── */}
-      <div style={{ display:'grid', gridTemplateColumns:'auto 1fr', gap:20, marginBottom:20, alignItems:'start' }}>
-        <div className="card" style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10, padding:'28px 36px' }}>
+      <div style={{ display:'grid', gridTemplateColumns: isMobile ? '1fr' : 'auto 1fr', gap:20, marginBottom:20, alignItems:'start' }}>
+        <div className="card" style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10, padding: isMobile ? '18px' : '28px 36px' }}>
           <ScoreRing value={sc?.total || 0} color={scColor}/>
           <span style={{ fontSize:20, fontWeight:800, color:scColor }}>{sc?.label || '—'}</span>
           <span style={{ fontSize:12, color:'var(--muted)' }}>Score étudiant global</span>

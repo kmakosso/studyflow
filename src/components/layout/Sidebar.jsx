@@ -27,7 +27,7 @@ const NAV = [
   { to: '/profile',     icon: User,            label: 'Mon profil'        },
 ];
 
-export default function Sidebar({ collapsed }) {
+export default function Sidebar({ collapsed, inDrawer = false }) {
   const handleExport = async () => {
     const data = await exportAll();
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -90,12 +90,15 @@ export default function Sidebar({ collapsed }) {
 
   return (
     <aside style={{
-      width: collapsed ? 52 : 220, minWidth: collapsed ? 52 : 220,
+      width: inDrawer ? '100%' : (collapsed ? 52 : 220),
+      minWidth: inDrawer ? 'unset' : (collapsed ? 52 : 220),
       height: '100%', display: 'flex', flexDirection: 'column',
-      backgroundColor: 'var(--surface)', borderRight: '1px solid var(--border)',
+      backgroundColor: 'var(--surface)',
+      borderRight: inDrawer ? 'none' : '1px solid var(--border)',
       transition: 'width 0.2s, min-width 0.2s', overflow: 'hidden',
     }}>
-      {/* Brand */}
+      {/* Brand — only shown on desktop (drawer has its own header) */}
+      {!inDrawer && (
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '14px 10px', borderBottom: '1px solid var(--border)',
@@ -107,6 +110,7 @@ export default function Sidebar({ collapsed }) {
         }}>SF</div>
         {!collapsed && <span style={{ fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap' }}>StudyFlow</span>}
       </div>
+      )}
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: '8px 6px', overflowY: 'auto', overflowX: 'hidden' }}>
@@ -132,7 +136,7 @@ export default function Sidebar({ collapsed }) {
             whiteSpace: 'nowrap', overflow: 'hidden',
           }}>
             <Icon size={15} style={{ flexShrink: 0 }} />
-            {!collapsed && label}
+            {(!collapsed || inDrawer) && label}
           </button>
         ))}
       </div>
