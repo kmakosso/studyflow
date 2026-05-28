@@ -3,8 +3,9 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Send, Bot, Key, Settings, Plus,
   MessageSquare, Trash2, ChevronLeft, ChevronRight,
-  BookOpen, Mic, MicOff, ImagePlus, Volume2, VolumeX, X,
+  BookOpen, Mic, MicOff, ImagePlus, Volume2, VolumeX, X, History,
 } from 'lucide-react';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { claude } from '../services/claudeService';
 import { useIntelligence } from '../contexts/IntelligenceContext';
 import { db } from '../services/db';
@@ -238,7 +239,7 @@ function TypingDots() {
 }
 
 /* ─── History sidebar ────────────────────────────────────────────── */
-function HistorySidebar({ conversations, activeId, onSelect, onNew, onDelete, collapsed, onToggle }) {
+function HistorySidebar({ conversations, activeId, onSelect, onNew, onDelete, collapsed, onToggle, inSheet = false }) {
   const grouped = {};
   const today     = format(new Date(), 'yyyy-MM-dd');
   const yesterday = format(new Date(Date.now() - 86400000), 'yyyy-MM-dd');
@@ -250,7 +251,8 @@ function HistorySidebar({ conversations, activeId, onSelect, onNew, onDelete, co
     grouped[label].push(c);
   }
 
-  if (collapsed) {
+  // Collapsed desktop strip
+  if (collapsed && !inSheet) {
     return (
       <div style={{ width:40, borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', alignItems:'center', padding:'12px 0', gap:12, backgroundColor:'var(--surface)' }}>
         <button onClick={onToggle} title="Ouvrir l'historique"
@@ -265,6 +267,49 @@ function HistorySidebar({ conversations, activeId, onSelect, onNew, onDelete, co
     );
   }
 
+  // Conversation list (shared between desktop sidebar and mobile sheet)
+  const List = () => (
+    <div style={{ flex:1, overflowY:'auto', padding:'8px 6px' }}>
+      {conversations.length === 0 && (
+        <p style={{ fontSize:12, color:'var(--muted)', textAlign:'center', padding:'20px 10px' }}>
+          Aucune conversation sauvegardée
+        </p>
+      )}
+      {Object.entries(grouped).map(([label, convs]) => (
+        <div key={label}>
+          <p style={{ fontSize:10, fontWeight:700, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'0.06em', padding:'8px 6px 4px', margin:0 }}>
+            {label}
+          </p>
+          {convs.map(c => (
+            <div key={c.id}
+              style={{
+                display:'flex', alignItems:'center', gap:4, padding:'8px 10px', borderRadius:8,
+                backgroundColor: c.id === activeId ? 'var(--primary)15' : 'transparent',
+                border: c.id === activeId ? '1px solid var(--primary)33' : '1px solid transparent',
+                cursor:'pointer', marginBottom:2,
+              }}
+              onClick={() => onSelect(c)}
+            >
+              <MessageSquare size={12} color="var(--muted)" style={{ flexShrink:0 }}/>
+              <span style={{ flex:1, fontSize:13, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {c.title || 'Sans titre'}
+              </span>
+              <button onClick={e => { e.stopPropagation(); onDelete(c.id); }}
+                style={{ background:'none', border:'none', color:'var(--muted)', cursor:'pointer', display:'flex', padding:4, flexShrink:0 }}
+              >
+                <Trash2 size={11}/>
+              </button>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+
+  // Mobile bottom sheet — just render the list (header is in the sheet)
+  if (inSheet) return <List />;
+
+  // Desktop sidebar
   return (
     <div style={{ width:240, borderRight:'1px solid var(--border)', display:'flex', flexDirection:'column', backgroundColor:'var(--surface)', flexShrink:0 }}>
       {/* Header */}
@@ -281,44 +326,7 @@ function HistorySidebar({ conversations, activeId, onSelect, onNew, onDelete, co
           <ChevronLeft size={15}/>
         </button>
       </div>
-
-      {/* Conversation list */}
-      <div style={{ flex:1, overflowY:'auto', padding:'8px 6px' }}>
-        {conversations.length === 0 && (
-          <p style={{ fontSize:12, color:'var(--muted)', textAlign:'center', padding:'20px 10px' }}>
-            Aucune conversation sauvegardée
-          </p>
-        )}
-        {Object.entries(grouped).map(([label, convs]) => (
-          <div key={label}>
-            <p style={{ fontSize:10, fontWeight:700, color:'var(--muted)', textTransform:'uppercase', letterSpacing:'0.06em', padding:'8px 6px 4px', margin:0 }}>
-              {label}
-            </p>
-            {convs.map(c => (
-              <div key={c.id}
-                style={{
-                  display:'flex', alignItems:'center', gap:4, padding:'6px 8px', borderRadius:8,
-                  backgroundColor: c.id === activeId ? 'var(--primary)15' : 'transparent',
-                  border: c.id === activeId ? '1px solid var(--primary)33' : '1px solid transparent',
-                  cursor:'pointer', marginBottom:2,
-                }}
-                onClick={() => onSelect(c)}
-              >
-                <MessageSquare size={11} color="var(--muted)" style={{ flexShrink:0 }}/>
-                <span style={{ flex:1, fontSize:12, color:'var(--text)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                  {c.title || 'Sans titre'}
-                </span>
-                <button onClick={e => { e.stopPropagation(); onDelete(c.id); }}
-                  style={{ background:'none', border:'none', color:'var(--muted)', cursor:'pointer', display:'flex', padding:2, flexShrink:0, opacity:0 }}
-                  className="del-btn"
-                >
-                  <Trash2 size={10}/>
-                </button>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
+      <List />
       <style>{`.del-btn { opacity: 0; } div:hover > .del-btn { opacity: 1 !important; }`}</style>
     </div>
   );
@@ -356,7 +364,9 @@ export default function Assistant() {
   const [activeSubjectId, setActiveSubjectId] = useState(null);
   const [conversations,   setConversations]   = useState([]);
   const [activeConvId,    setActiveConvId]    = useState(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const isMobile = useIsMobile();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [historySheetOpen, setHistorySheetOpen] = useState(false) // mobile bottom sheet;
   const [notification,   setNotification]   = useState('');
   const [attachedImage,  setAttachedImage]  = useState(null);  // { base64, type, preview }
   const [isListening,    setIsListening]    = useState(false);
@@ -674,88 +684,156 @@ export default function Assistant() {
   return (
     <div style={{ height:'100%', display:'flex', overflow:'hidden', backgroundColor:'var(--bg)' }}>
 
-      {/* ── History sidebar ── */}
-      <HistorySidebar
-        conversations={conversations}
-        activeId={activeConvId}
-        onSelect={loadConversationWithStop}
-        onNew={newConversation}
-        onDelete={deleteConversation}
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed(c => !c)}
-      />
+      {/* ── Desktop history sidebar (hidden on mobile) ── */}
+      {!isMobile && (
+        <HistorySidebar
+          conversations={conversations}
+          activeId={activeConvId}
+          onSelect={loadConversationWithStop}
+          onNew={newConversation}
+          onDelete={deleteConversation}
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(c => !c)}
+        />
+      )}
+
+      {/* ── Mobile history bottom sheet ── */}
+      {isMobile && historySheetOpen && (
+        <>
+          <div onClick={() => setHistorySheetOpen(false)} style={{
+            position:'fixed', inset:0, zIndex:400, backgroundColor:'rgba(0,0,0,0.55)',
+            backdropFilter:'blur(2px)',
+          }}/>
+          <div style={{
+            position:'fixed', left:0, right:0, bottom:0, zIndex:401,
+            height:'72vh', backgroundColor:'var(--surface)',
+            borderRadius:'20px 20px 0 0', border:'1px solid var(--border)',
+            display:'flex', flexDirection:'column',
+            animation:'slideUpSheet 0.25s ease-out',
+          }}>
+            {/* Sheet handle */}
+            <div style={{ display:'flex', justifyContent:'center', padding:'12px 0 4px' }}>
+              <div style={{ width:40, height:4, borderRadius:4, backgroundColor:'var(--border)' }}/>
+            </div>
+            <div style={{ padding:'0 12px 8px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <span style={{ fontWeight:700, fontSize:14 }}>Conversations</span>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={() => { newConversation(); setHistorySheetOpen(false); }}
+                  style={{ display:'flex', alignItems:'center', gap:5, padding:'6px 12px', borderRadius:8, border:'1px solid var(--border)', background:'none', color:'var(--text)', fontSize:12.5, fontWeight:600, cursor:'pointer' }}>
+                  <Plus size={13}/> Nouvelle
+                </button>
+                <button onClick={() => setHistorySheetOpen(false)}
+                  style={{ background:'none', border:'none', color:'var(--muted)', cursor:'pointer', display:'flex', padding:4 }}>
+                  <X size={18}/>
+                </button>
+              </div>
+            </div>
+            <div style={{ flex:1, overflowY:'auto', padding:'0 8px 16px' }}>
+              <HistorySidebar
+                conversations={conversations}
+                activeId={activeConvId}
+                onSelect={c => { loadConversationWithStop(c); setHistorySheetOpen(false); }}
+                onNew={() => { newConversation(); setHistorySheetOpen(false); }}
+                onDelete={deleteConversation}
+                collapsed={false}
+                onToggle={() => setHistorySheetOpen(false)}
+                inSheet
+              />
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ── Main chat area ── */}
       <div style={{ flex:1, display:'flex', flexDirection:'column', minWidth:0 }}>
 
-        {/* Header */}
+        {/* Header — desktop: single row | mobile: two rows */}
         <div style={{
-          padding:'12px 16px', borderBottom:'1px solid var(--border)',
-          backgroundColor:'var(--surface)',
-          display:'flex', alignItems:'center', gap:10, flexShrink:0,
+          padding: isMobile ? '8px 12px' : '12px 16px',
+          borderBottom:'1px solid var(--border)',
+          backgroundColor:'var(--surface)', flexShrink:0,
         }}>
-          <div style={{
-            width:34, height:34, borderRadius:'50%', flexShrink:0,
-            background:'linear-gradient(135deg, var(--primary), #a78bfa)',
-            display:'flex', alignItems:'center', justifyContent:'center',
-          }}>
-            <Bot size={16} color="white"/>
-          </div>
-          <div style={{ flex:1 }}>
-            <p style={{ margin:0, fontWeight:700, fontSize:14 }}>
-              {provider === 'grok' ? '⚡ Assistant Grok' : '🤖 Assistant Claude'}
-            </p>
-            <p style={{ margin:0, fontSize:10.5, color:'var(--muted)' }}>
-              {provider === 'grok'
-                ? (hasGrok ? `✓ ${grokModel} · Accès complet` : 'Clé xAI requise')
-                : (hasKey  ? '✓ claude-opus-4-7 · Accès complet' : 'Clé Anthropic requise')}
-            </p>
-          </div>
+          {/* Row 1 */}
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <div style={{
+              width:32, height:32, borderRadius:'50%', flexShrink:0,
+              background:'linear-gradient(135deg, var(--primary), #a78bfa)',
+              display:'flex', alignItems:'center', justifyContent:'center',
+            }}>
+              <Bot size={15} color="white"/>
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <p style={{ margin:0, fontWeight:700, fontSize:isMobile ? 13 : 14, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                {provider === 'grok' ? '⚡ Grok' : '🤖 Claude'}
+                {activeSubject && <span style={{ color:activeSubject.color, fontWeight:600 }}> · {activeSubject.name}</span>}
+              </p>
+              {!isMobile && (
+                <p style={{ margin:0, fontSize:10.5, color:'var(--muted)' }}>
+                  {provider === 'grok'
+                    ? (hasGrok ? `✓ ${grokModel} · Accès complet` : 'Clé xAI requise')
+                    : (hasKey  ? '✓ claude-opus-4-7 · Accès complet' : 'Clé Anthropic requise')}
+                </p>
+              )}
+            </div>
 
-          {/* Provider selector */}
-          <div style={{ display:'flex', gap:4, padding:3, backgroundColor:'var(--card)', borderRadius:8, border:'1px solid var(--border)' }}>
-            {[{ id:'claude', label:'🤖 Claude' }, { id:'grok', label:'⚡ Grok' }].map(p => (
-              <button key={p.id} onClick={() => { setProvider(p.id); newConversation(); }}
-                style={{
-                  padding:'4px 10px', borderRadius:6, border:'none', cursor:'pointer', fontSize:12, fontWeight:600,
-                  backgroundColor: provider === p.id ? 'var(--primary)' : 'transparent',
-                  color: provider === p.id ? '#fff' : 'var(--muted)',
-                  transition:'all 0.15s',
-                }}>
-                {p.label}
+            {/* Provider toggle */}
+            <div style={{ display:'flex', gap:3, padding:3, backgroundColor:'var(--card)', borderRadius:8, border:'1px solid var(--border)', flexShrink:0 }}>
+              {[{ id:'claude', label: isMobile ? '🤖' : '🤖 Claude' }, { id:'grok', label: isMobile ? '⚡' : '⚡ Grok' }].map(p => (
+                <button key={p.id} onClick={() => { setProvider(p.id); newConversation(); }}
+                  style={{
+                    padding: isMobile ? '4px 8px' : '4px 10px', borderRadius:6, border:'none', cursor:'pointer',
+                    fontSize:12, fontWeight:600,
+                    backgroundColor: provider === p.id ? 'var(--primary)' : 'transparent',
+                    color: provider === p.id ? '#fff' : 'var(--muted)',
+                    transition:'all 0.15s',
+                  }}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Mobile: history button */}
+            {isMobile && (
+              <button onClick={() => setHistorySheetOpen(true)} title="Historique"
+                style={{ background:'none', border:'1px solid var(--border)', borderRadius:8, padding:'6px 7px', cursor:'pointer', color:'var(--muted)', display:'flex', flexShrink:0 }}>
+                <History size={14}/>
               </button>
-            ))}
+            )}
+
+            {/* Settings */}
+            <button onClick={() => setShowSetup(true)} title="Paramètres API"
+              style={{ background:'none', border:'1px solid var(--border)', borderRadius:8, padding:'5px 7px', cursor:'pointer', color:'var(--muted)', display:'flex', flexShrink:0 }}>
+              <Settings size={13}/>
+            </button>
           </div>
 
-          {/* Grok model selector */}
-          {provider === 'grok' && (
-            <select value={grokModel} onChange={e => setGrokModel(e.target.value)}
-              style={{ padding:'5px 8px', borderRadius:8, border:'1px solid var(--border)', background:'var(--card)', color:'var(--text)', fontSize:11.5, cursor:'pointer' }}>
-              <option value="grok-3">grok-3</option>
-              <option value="grok-3-mini">grok-3-mini</option>
-              <option value="grok-2">grok-2</option>
+          {/* Row 2 — controls (subject + grok model) */}
+          <div style={{ display:'flex', gap:6, marginTop:8, alignItems:'center', flexWrap:'wrap' }}>
+            {/* Grok model selector */}
+            {provider === 'grok' && (
+              <select value={grokModel} onChange={e => setGrokModel(e.target.value)}
+                style={{ padding:'4px 8px', borderRadius:8, border:'1px solid var(--border)', background:'var(--card)', color:'var(--text)', fontSize:11.5, cursor:'pointer', flexShrink:0 }}>
+                <option value="grok-3">grok-3</option>
+                <option value="grok-3-mini">grok-3-mini</option>
+                <option value="grok-2">grok-2</option>
+              </select>
+            )}
+
+            {/* Subject selector */}
+            <select
+              value={activeSubjectId || ''}
+              onChange={e => setActiveSubjectId(e.target.value || null)}
+              style={{
+                flex:1, minWidth:0,
+                padding:'4px 10px', borderRadius:8, border:'1px solid var(--border)',
+                background:'var(--card)', color: activeSubjectId ? activeSubject?.color || 'var(--text)' : 'var(--muted)',
+                fontSize:12.5, fontWeight: activeSubjectId ? 600 : 400, cursor:'pointer',
+              }}
+            >
+              <option value="">🌐 Toutes matières</option>
+              {subjects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
-          )}
-
-          {/* Subject selector */}
-          <select
-            value={activeSubjectId || ''}
-            onChange={e => setActiveSubjectId(e.target.value || null)}
-            style={{
-              padding:'5px 10px', borderRadius:8, border:'1px solid var(--border)',
-              background:'var(--card)', color: activeSubjectId ? activeSubject?.color || 'var(--text)' : 'var(--muted)',
-              fontSize:12.5, fontWeight: activeSubjectId ? 600 : 400, cursor:'pointer',
-              maxWidth:160,
-            }}
-          >
-            <option value="">🌐 Toutes matières</option>
-            {subjects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-
-          <button onClick={() => setShowSetup(true)} title="Paramètres API"
-            style={{ background:'none', border:'1px solid var(--border)', borderRadius:8, padding:'5px 8px', cursor:'pointer', color:'var(--muted)', display:'flex' }}>
-            <Settings size={13}/>
-          </button>
+          </div>
         </div>
 
         {/* No key banner */}
@@ -796,11 +874,14 @@ export default function Assistant() {
         {/* Notification toast */}
         {notification && (
           <div style={{
-            position:'fixed', bottom:80, left:'50%', transform:'translateX(-50%)',
+            position:'fixed',
+            bottom: isMobile ? 80 : 80,
+            left:'50%', transform:'translateX(-50%)',
             backgroundColor:'var(--surface)', border:'1px solid var(--border)',
             borderRadius:12, padding:'10px 20px', fontSize:13, fontWeight:600,
             boxShadow:'0 4px 20px rgba(0,0,0,0.2)', zIndex:1000,
             color: notification.startsWith('✅') ? 'var(--success)' : 'var(--danger)',
+            whiteSpace:'nowrap',
           }}>
             {notification}
           </div>
@@ -824,26 +905,40 @@ export default function Assistant() {
 
         {/* Quick prompts */}
         {showQuickPrompts && (
-          <div style={{ padding:'0 16px 8px', display:'flex', flexWrap:'wrap', gap:6 }}>
+          <div style={{
+            padding: isMobile ? '0 12px 8px' : '0 16px 8px',
+            display:'flex',
+            flexWrap: isMobile ? 'nowrap' : 'wrap',
+            gap:6,
+            overflowX: isMobile ? 'auto' : 'visible',
+            WebkitOverflowScrolling: 'touch',
+            scrollbarWidth: 'none',
+          }}>
             {QUICK_PROMPTS.map((p,i) => (
               <button key={i} onClick={() => sendMessage(p.text)}
                 style={{
                   background:'var(--card)', border:'1px solid var(--border)',
                   borderRadius:20, padding:'5px 12px', fontSize:12,
                   color:'var(--text)', cursor:'pointer', fontWeight:500,
-                  display:'flex', alignItems:'center', gap:5, transition:'border-color 0.15s',
+                  display:'flex', alignItems:'center', gap:5,
+                  transition:'border-color 0.15s',
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
                 }}
                 onMouseEnter={e => e.currentTarget.style.borderColor='var(--primary)'}
                 onMouseLeave={e => e.currentTarget.style.borderColor='var(--border)'}
               >
-                <span>{p.icon}</span> {p.text}
+                <span>{p.icon}</span>
+                {isMobile
+                  ? p.text.split(' ').slice(0, 4).join(' ') + (p.text.split(' ').length > 4 ? '…' : '')
+                  : p.text}
               </button>
             ))}
           </div>
         )}
 
         {/* Input bar */}
-        <div style={{ padding:'8px 16px 14px', borderTop:'1px solid var(--border)', backgroundColor:'var(--surface)', flexShrink:0 }}>
+        <div style={{ padding: isMobile ? '8px 10px 10px' : '8px 16px 14px', borderTop:'1px solid var(--border)', backgroundColor:'var(--surface)', flexShrink:0 }}>
 
           {/* Image preview */}
           {attachedImage && (
@@ -967,9 +1062,11 @@ export default function Assistant() {
               <Send size={15}/>
             </button>
           </div>
-          <p style={{ margin:'5px 0 0', fontSize:11, color:'var(--muted)', textAlign:'center' }}>
-            Entrée pour envoyer · Shift+Entrée pour nouvelle ligne · 📷 image · 🎙️ voix
-          </p>
+          {!isMobile && (
+            <p style={{ margin:'5px 0 0', fontSize:11, color:'var(--muted)', textAlign:'center' }}>
+              Entrée pour envoyer · Shift+Entrée pour nouvelle ligne · 📷 image · 🎙️ voix
+            </p>
+          )}
         </div>
       </div>
 
@@ -984,9 +1081,10 @@ export default function Assistant() {
       )}
 
       <style>{`
-        @keyframes pulse    { 0%,80%,100%{opacity:.3;transform:scale(.8)} 40%{opacity:1;transform:scale(1)} }
-        @keyframes blink    { 0%,100%{opacity:1} 50%{opacity:0} }
-        @keyframes micPulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        @keyframes pulse       { 0%,80%,100%{opacity:.3;transform:scale(.8)} 40%{opacity:1;transform:scale(1)} }
+        @keyframes blink       { 0%,100%{opacity:1} 50%{opacity:0} }
+        @keyframes micPulse    { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        @keyframes slideUpSheet{ from{transform:translateY(100%)} to{transform:translateY(0)} }
       `}</style>
     </div>
   );
