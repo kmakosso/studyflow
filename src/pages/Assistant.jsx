@@ -605,9 +605,9 @@ export default function Assistant() {
         historyRef.current = [...historyRef.current, { role:'user', content: trimmed + ' [image jointe]' }];
       } else if (provider === 'grok') {
         historyRef.current = [...historyRef.current, { role:'user', content:trimmed }];
-        const { buildAcademicContext, streamGrok } = await import('../services/claudeService');
+        const { buildAcademicContext, buildSystemPrompt, streamGrok } = await import('../services/claudeService');
         const contextBlock = await buildAcademicContext();
-        const system = `Tu es l'assistant académique personnel de cet étudiant dans StudyFlow.\nTu réponds TOUJOURS en français, de façon précise et orientée action.\nCONTEXTE ACADÉMIQUE :\n${contextBlock}`;
+        const system = buildSystemPrompt(contextBlock);
         stream = streamGrok({ messages: historyRef.current, system, model: grokModel });
       } else {
         historyRef.current = [...historyRef.current, { role:'user', content:trimmed }];

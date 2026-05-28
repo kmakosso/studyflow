@@ -199,7 +199,7 @@ export async function buildAcademicContext() {
 
 /* ─── System prompt ──────────────────────────────────────────────── */
 
-function buildSystemPrompt(contextBlock, extra = '') {
+export function buildSystemPrompt(contextBlock, extra = '') {
   return `Tu es l'assistant de révision personnel de cet étudiant, intégré dans StudyFlow.
 
 ━━━ TON IDENTITÉ ━━━
@@ -621,4 +621,5 @@ export const claude = {
   generateFlashcardsFromText,
   generateQuizFromText,
   buildAcademicContext,
+  buildSystemPrompt,
 };
