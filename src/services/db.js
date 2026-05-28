@@ -5,7 +5,8 @@ const DB_VERSION = 8;
 
 let _db = null;
 
-async function getDB() {
+/** @internal — exposed for syncEngine to write cloud data without triggering hooks */
+export async function getDB() {
   if (_db) return _db;
   _db = await openDB(DB_NAME, DB_VERSION, {
     upgrade(db, oldVersion) {

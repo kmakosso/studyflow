@@ -19,15 +19,17 @@
  *   syncEngine.stop();         // call after logout
  */
 
-import { db, onDbWrite, onDbDelete } from './db';
+import { db, getDB, onDbWrite, onDbDelete } from './db';
 import { supabase, isSupabaseConfigured } from './supabase';
 
 /* ─── Stores excluded from cloud sync ───────────────────────────── */
 const LOCAL_ONLY_STORES = new Set([
   'settings',
-  'documentChunks', // large, can be rebuilt from documents
+  'documentChunks', // large, rebuilt locally from documents
+  'documentFiles',  // binary blobs — too large for JSON sync
   'profile',
   'dailyLogs',
+  'conversations',  // session-specific chat history — kept local per device
 ]);
 
 /* ─── Status callbacks ───────────────────────────────────────────── */
@@ -79,7 +81,11 @@ class SyncEngine {
       });
     }
 
-    // Initial pull, then start flush loop
+    // Initial pull (full pull if first login on this device, incremental otherwise)
+    // If no _lastPull we reset it so pullFromCloud fetches ALL rows
+    if (!this._lastPull) {
+      this._lastPull = null; // ensure full pull on new device
+    }
     await this.pullFromCloud();
     this._startTimer();
     _emit('idle');
@@ -186,8 +192,8 @@ class SyncEngine {
         if (LOCAL_ONLY_STORES.has(row.store)) continue;
 
         if (row.deleted_at) {
-          // Remote delete → remove from IDB (without triggering write hooks)
-          const idb = await getIDB();
+          // Remote delete → remove from IDB directly (no hooks to avoid echo)
+          const idb = await getDB();
           await idb.delete(row.store, row.id).catch(() => {});
         } else {
           // Upsert: last-write-wins using updated_at
@@ -195,7 +201,7 @@ class SyncEngine {
           const localTs = local?.updatedAt ?? local?.createdAt ?? '';
           if (!local || row.updated_at >= localTs) {
             // Write directly to IDB without triggering write hooks (avoid echo)
-            const idb = await getIDB();
+            const idb = await getDB();
             await idb.put(row.store, row.data).catch(() => {});
           }
         }
@@ -261,11 +267,6 @@ class SyncEngine {
 
 /* ─── Singleton export ───────────────────────────────────────────── */
 export const syncEngine = new SyncEngine();
-
-/* ─── Internal helper to get raw IDB without write hooks ────────── */
-/* We open the same IDB directly so we can write cloud-pulled data
- * without triggering the write hooks (would cause echo loops). */
-import { openDB } from 'idb';
-async function getIDB() {
-  return openDB('studyflow_v1', 6);
-}
+// getDB() is imported from db.js and used directly for raw IDB writes.
+// It uses the current DB version (no stale version bug) and bypasses
+// write hooks (avoids echo loops with the sync queue).

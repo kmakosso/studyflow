@@ -63,9 +63,11 @@ export function AuthProvider({ children }) {
 
   /* ── Login: init sync engine ──────────────────────────────────── */
   async function _handleLogin(u, isNewLogin) {
+    // init() already calls pullFromCloud() so remote data lands first
     await syncEngine.init(u.id);
     if (isNewLogin) {
-      // Push any data written while offline before pulling
+      // After pull, push any local data that was created while offline.
+      // pull-first prevents overwriting cloud data with an empty new device.
       await syncEngine.pushAll();
     }
   }
