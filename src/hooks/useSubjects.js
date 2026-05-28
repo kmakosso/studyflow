@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { db } from '../services/db';
+import { useSyncRefresh } from './useSyncRefresh';
 
 export const COLORS = [
   '#7c6af7','#ec4899','#f59e0b','#22c55e',
@@ -18,6 +19,7 @@ export function useSubjects() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   const add = async (data) => {
     const item = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), ...data };

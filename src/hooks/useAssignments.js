@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { db } from '../services/db';
+import { useSyncRefresh } from './useSyncRefresh';
 
 export function useAssignments() {
   const [assignments, setAssignments] = useState([]);
@@ -12,6 +13,7 @@ export function useAssignments() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   const add = async (data) => {
     const item = {

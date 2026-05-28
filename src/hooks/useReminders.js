@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { db } from '../services/db';
 import { notif } from '../services/notifications';
+import { useSyncRefresh } from './useSyncRefresh';
 
 export function useReminders() {
   const [reminders, setReminders] = useState([]);
@@ -14,6 +15,7 @@ export function useReminders() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   // Check every minute if a reminder should fire
   useEffect(() => {

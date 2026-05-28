@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { db } from '../services/db';
+import { useSyncRefresh } from './useSyncRefresh';
 
 export const DAYS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
 
@@ -58,6 +59,7 @@ export function useSchedule() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   const add = async (data) => {
     const item = { id: crypto.randomUUID(), ...data };

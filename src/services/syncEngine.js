@@ -43,6 +43,26 @@ export function onSyncStatus(fn) {
 }
 function _emit(status) { for (const fn of _statusListeners) fn(status); }
 
+/* ─── DOM sync event ─────────────────────────────────────────────── */
+/* Dispatched after every pull that wrote rows. React hooks subscribe
+ * to this event to reload their local state without a page reload.   */
+export const SYNC_EVENT = 'studyflow:data-sync';
+
+function dispatchSync() {
+  window.dispatchEvent(new CustomEvent(SYNC_EVENT));
+}
+
+/* ─── Sanitize items before cloud upload ─────────────────────────── */
+/* Truncate very large text fields so rows stay within Supabase limits */
+const MAX_TEXT_BYTES = 80_000; // ~80 KB per document row
+
+function sanitizeForSync(store, item) {
+  if (store === 'documents' && item.text && item.text.length > MAX_TEXT_BYTES) {
+    return { ...item, text: item.text.slice(0, MAX_TEXT_BYTES) };
+  }
+  return item;
+}
+
 /* ─── SyncEngine class ───────────────────────────────────────────── */
 
 class SyncEngine {
@@ -72,7 +92,9 @@ class SyncEngine {
       onDbWrite((store, item) => {
         if (!this._userId) return;
         if (LOCAL_ONLY_STORES.has(store)) return;
-        this._enqueue({ op: 'upsert', store, id: item.id, data: item, ts: Date.now() });
+        // Sanitize before queueing (truncate large doc.text)
+        const data = sanitizeForSync(store, item);
+        this._enqueue({ op: 'upsert', store, id: item.id, data, ts: Date.now() });
       });
       onDbDelete((store, id) => {
         if (!this._userId) return;
@@ -186,7 +208,8 @@ class SyncEngine {
       if (error) throw error;
       if (!rows || rows.length === 0) { _emit('idle'); return; }
 
-      let latestTs = this._lastPull ?? '';
+      let latestTs    = this._lastPull ?? '';
+      let rowsWritten = 0;
 
       for (const row of rows) {
         if (LOCAL_ONLY_STORES.has(row.store)) continue;
@@ -195,6 +218,7 @@ class SyncEngine {
           // Remote delete → remove from IDB directly (no hooks to avoid echo)
           const idb = await getDB();
           await idb.delete(row.store, row.id).catch(() => {});
+          rowsWritten++;
         } else {
           // Upsert: last-write-wins using updated_at
           const local = await db.get(row.store, row.id).catch(() => null);
@@ -203,6 +227,7 @@ class SyncEngine {
             // Write directly to IDB without triggering write hooks (avoid echo)
             const idb = await getDB();
             await idb.put(row.store, row.data).catch(() => {});
+            rowsWritten++;
           }
         }
 
@@ -213,6 +238,11 @@ class SyncEngine {
       this._lastPull = latestTs;
       await db.setSetting('_syncLastPull', latestTs);
       _emit('idle');
+
+      // Notify all React hooks so they reload their state without a page refresh
+      if (rowsWritten > 0) {
+        dispatchSync();
+      }
     } catch (err) {
       console.warn('[SyncEngine] pull error:', err);
       _emit('error');
@@ -239,7 +269,7 @@ class SyncEngine {
           user_id: this._userId,
           store,
           id:      item.id,
-          data:    item,
+          data:    sanitizeForSync(store, item),   // truncate large fields
           deleted_at: null,
         }));
         // Batch in chunks of 200 to stay within Supabase limits

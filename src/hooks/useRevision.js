@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { db } from '../services/db';
 import { isDue } from '../services/srs';
+import { useSyncRefresh } from './useSyncRefresh';
 
 export function useRevision() {
   const [cards, setCards]   = useState([]);
@@ -18,6 +19,7 @@ export function useRevision() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   const add = async (data) => {
     const card = {

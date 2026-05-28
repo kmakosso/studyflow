@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { db } from '../services/db';
+import { useSyncRefresh } from './useSyncRefresh';
 
 export function useGrades() {
   const [grades, setGrades] = useState([]);
@@ -12,6 +13,7 @@ export function useGrades() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   const add = async (data) => {
     const item = { id: crypto.randomUUID(), date: new Date().toISOString().split('T')[0], maxScore: 20, coefficient: 1, ...data };
