@@ -9,6 +9,8 @@ import {
 import { db } from '../services/db';
 import { claude } from '../services/claudeService';
 import { importDocument, ACCEPTED_TYPES, formatFileSize, getDocTypeLabel } from '../services/documentImporter';
+import { uploadDocument, deleteDocument as deleteStorageDoc } from '../services/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import ConsentModal from '../components/ConsentModal';
 import ApiKeySetup from '../components/ApiKeySetup';
 
@@ -43,7 +45,7 @@ function DocTypeChip({ ext }) {
 
 /* ─── Document card ──────────────────────────────────────────────── */
 
-function DocCard({ doc, subjects, onAnalyze, onDelete, onView }) {
+function DocCard({ doc, subjects, onAnalyze, onDelete, onView, onOpen, onDownload }) {
   const subj = subjects.find(s => s.id === doc.subjectId);
   return (
     <div style={{
@@ -103,6 +105,33 @@ function DocCard({ doc, subjects, onAnalyze, onDelete, onView }) {
       )}
 
       <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+        {/* Open original file in new tab */}
+        <button onClick={() => onOpen(doc)} style={{
+          display:'flex', alignItems:'center', gap:4,
+          padding:'5px 10px', borderRadius:7,
+          border:'1px solid var(--border)', background:'none',
+          color:'var(--muted)', fontSize:11.5, cursor:'pointer',
+        }}
+        title="Ouvrir le fichier original"
+        onMouseEnter={e => { e.currentTarget.style.borderColor='var(--primary)'; e.currentTarget.style.color='var(--primary)'; }}
+        onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--muted)'; }}
+        >
+          <Eye size={12}/> Ouvrir
+        </button>
+        {/* Download original */}
+        <button onClick={() => onDownload(doc)} style={{
+          display:'flex', alignItems:'center', gap:4,
+          padding:'5px 10px', borderRadius:7,
+          border:'1px solid var(--border)', background:'none',
+          color:'var(--muted)', fontSize:11.5, cursor:'pointer',
+        }}
+        title="Télécharger le fichier original"
+        onMouseEnter={e => { e.currentTarget.style.borderColor='var(--primary)'; e.currentTarget.style.color='var(--primary)'; }}
+        onMouseLeave={e => { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--muted)'; }}
+        >
+          ⬇ Télécharger
+        </button>
+        {/* Extracted text viewer */}
         {doc.text && (
           <button onClick={() => onView(doc)} style={{
             display:'flex', alignItems:'center', gap:4,
@@ -110,7 +139,7 @@ function DocCard({ doc, subjects, onAnalyze, onDelete, onView }) {
             border:'1px solid var(--border)', background:'none',
             color:'var(--muted)', fontSize:11.5, cursor:'pointer',
           }}>
-            <Eye size={12}/> Voir
+            <FileText size={12}/> Texte
           </button>
         )}
         {ANALYSIS_TASKS.map(task => (
@@ -224,6 +253,7 @@ export default function Library() {
   const [viewDoc,      setViewDoc]      = useState(null);
 
   const fileInputRef = useRef(null);
+  const { user } = useAuth();
 
   const filterSubjectId = searchParams.get('subject') || null;
   const setFilter = id => id ? setSearchParams({ subject:id }) : setSearchParams({});
@@ -250,7 +280,18 @@ export default function Library() {
       try {
         const parsed = await importDocument(file);
         if (filterSubjectId) parsed.subjectId = filterSubjectId;
+
+        // 1. Save metadata + extracted text to documents store (synced)
         await db.put('documents', parsed);
+
+        // 2. Save the raw file Blob locally (never synced — stays on device)
+        await db.put('documentFiles', { id: parsed.id, blob: file, name: file.name, mimeType: file.type });
+
+        // 3. Upload original file to Supabase Storage when logged in
+        if (user) {
+          const storagePath = await uploadDocument(user.id, parsed.id, file);
+          if (storagePath) await db.put('documents', { ...parsed, storagePath });
+        }
       } catch (err) {
         errors.push(`${file.name} : ${err.message}`);
       }
@@ -259,6 +300,46 @@ export default function Library() {
     setImporting(false);
     setImportProgress('');
     if (errors.length) setImportErr(errors.join(' · '));
+  };
+
+  /* ── Open original file in new tab ───────────────────────────── */
+  const openOriginal = async (doc) => {
+    const record = await db.get('documentFiles', doc.id);
+    if (record?.blob) {
+      const url = URL.createObjectURL(record.blob);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } else if (doc.storagePath && user) {
+      // Fallback: fetch signed URL from Supabase Storage
+      const { getDocumentUrl } = await import('../services/supabase');
+      const url = await getDocumentUrl(doc.storagePath);
+      if (url) window.open(url, '_blank');
+      else setImportErr('Fichier original non disponible sur cet appareil.');
+    } else {
+      setImportErr('Fichier original non disponible sur cet appareil. Ré-importez le fichier.');
+    }
+  };
+
+  /* ── Download original file ───────────────────────────────────── */
+  const downloadOriginal = async (doc) => {
+    const record = await db.get('documentFiles', doc.id);
+    if (record?.blob) {
+      const url = URL.createObjectURL(record.blob);
+      const a   = document.createElement('a');
+      a.href = url; a.download = doc.name; a.click();
+      URL.revokeObjectURL(url);
+    } else if (doc.storagePath && user) {
+      const { getDocumentUrl } = await import('../services/supabase');
+      const url = await getDocumentUrl(doc.storagePath);
+      if (url) {
+        const a = document.createElement('a');
+        a.href = url; a.download = doc.name; a.click();
+      } else {
+        setImportErr('Impossible de télécharger depuis le cloud. Ré-importez le fichier.');
+      }
+    } else {
+      setImportErr('Fichier original non disponible. Ré-importez le fichier pour le télécharger.');
+    }
   };
 
   const handleFileSelect = async (e) => {
@@ -342,7 +423,12 @@ export default function Library() {
 
   const handleDelete = async (id) => {
     if (!confirm('Supprimer ce document ?')) return;
+    const doc = documents.find(d => d.id === id);
     await db.del('documents', id);
+    await db.del('documentFiles', id);       // delete local blob
+    if (doc?.storagePath) {
+      await deleteStorageDoc(doc.storagePath); // delete from Supabase Storage
+    }
     await load();
   };
 
@@ -501,7 +587,8 @@ export default function Library() {
           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(300px,1fr))', gap:14 }}>
             {filtered.map(doc => (
               <DocCard key={doc.id} doc={doc} subjects={subjects}
-                onAnalyze={handleAnalyze} onDelete={handleDelete} onView={setViewDoc}/>
+                onAnalyze={handleAnalyze} onDelete={handleDelete} onView={setViewDoc}
+                onOpen={openOriginal} onDownload={downloadOriginal}/>
             ))}
           </div>
         )}

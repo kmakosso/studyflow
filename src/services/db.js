@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME    = 'studyflow_v1';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 let _db = null;
 
@@ -62,6 +62,12 @@ async function getDB() {
           const cs = transaction.objectStore('courses');
           if (!cs.indexNames.contains('date')) cs.createIndex('date', 'date');
         } catch { /* courses may not exist in edge-case fresh install */ }
+      }
+
+      // V7 additions — raw file blobs (local-only, never synced to Supabase)
+      // Stores the original File/Blob so users can re-download their documents.
+      if (oldVersion < 7) {
+        ensure('documentFiles', []);
       }
     },
   });
