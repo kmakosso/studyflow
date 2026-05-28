@@ -55,8 +55,9 @@ export default function ApiKeySetup({ onClose, onSaved }) {
     if (tab === 'claude' && !key.startsWith('sk-ant-')) {
       setError('La clé Claude doit commencer par "sk-ant-"'); return;
     }
-    if (tab === 'grok' && !key.startsWith('xai-')) {
-      setError('La clé Grok doit commencer par "xai-"'); return;
+    // Grok keys start with "xai-" but we allow any non-empty key to be flexible
+    if (tab === 'grok' && key.length < 10) {
+      setError('La clé semble trop courte, vérifie ta clé xAI.'); return;
     }
 
     setSaving(true); setError('');

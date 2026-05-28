@@ -719,7 +719,12 @@ export default function Assistant() {
 
       {/* API key setup */}
       {showSetup && (
-        <ApiKeySetup onClose={() => setShowSetup(false)} onSaved={() => { setHasKey(true); setShowSetup(false); }}/>
+        <ApiKeySetup onClose={() => setShowSetup(false)} onSaved={() => {
+          // Refresh both key states after saving
+          claude.hasApiKey().then(setHasKey);
+          claude.hasGrokApiKey().then(setHasGrok);
+          setShowSetup(false);
+        }}/>
       )}
 
       <style>{`
