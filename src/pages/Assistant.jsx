@@ -305,6 +305,9 @@ export default function Assistant() {
   const [streaming, setStreaming]  = useState(false);
   const [loading,   setLoading]    = useState(false);
   const [hasKey,    setHasKey]     = useState(null);
+  const [hasGrok,   setHasGrok]    = useState(null);
+  const [provider,  setProvider]   = useState('claude'); // 'claude' | 'grok'
+  const [grokModel, setGrokModel]  = useState('grok-3');
   const [showSetup, setShowSetup]  = useState(false);
   const [subjects,  setSubjects]   = useState([]);
   const [activeSubjectId, setActiveSubjectId] = useState(null);
@@ -320,6 +323,7 @@ export default function Assistant() {
   /* ── Init ── */
   useEffect(() => {
     claude.hasApiKey().then(setHasKey);
+    claude.hasGrokApiKey().then(setHasGrok);
     db.all('subjects').then(s => setSubjects(s.sort((a,b) => a.name.localeCompare(b.name))));
     loadConversations();
   }, []);
@@ -420,7 +424,8 @@ export default function Assistant() {
   const sendMessage = useCallback(async (text) => {
     const trimmed = (text ?? input).trim();
     if (!trimmed || streaming || loading) return;
-    if (!hasKey) { setShowSetup(true); return; }
+    const activeKey = provider === 'grok' ? hasGrok : hasKey;
+    if (!activeKey) { setShowSetup(true); return; }
 
     setInput('');
     const userMsg = { id: crypto.randomUUID(), role:'user', text:trimmed };
@@ -438,9 +443,18 @@ export default function Assistant() {
       setLoading(false);
       setStreaming(true);
 
-      const stream = activeSubjectId
-        ? await claude.chatWithSubjectContext(historyRef.current, activeSubjectId)
-        : await claude.chatWithContext(historyRef.current);
+      // Build system prompt for Grok (same academic context)
+      let stream;
+      if (provider === 'grok') {
+        const { buildAcademicContext, streamGrok } = await import('../services/claudeService');
+        const contextBlock = await buildAcademicContext();
+        const system = `Tu es l'assistant académique personnel de cet étudiant dans StudyFlow.\nTu réponds TOUJOURS en français, de façon précise et orientée action.\nCONTEXTE ACADÉMIQUE :\n${contextBlock}`;
+        stream = streamGrok({ messages: historyRef.current, system, model: grokModel });
+      } else {
+        stream = activeSubjectId
+          ? await claude.chatWithSubjectContext(historyRef.current, activeSubjectId)
+          : await claude.chatWithContext(historyRef.current);
+      }
 
       for await (const chunk of stream) {
         fullText += chunk;
@@ -461,9 +475,11 @@ export default function Assistant() {
 
     } catch (err) {
       setLoading(false);
-      const errorText = err.message === 'NO_API_KEY'      ? 'Clé API manquante. Configure ta clé dans les paramètres.'
-                      : err.message === 'INVALID_API_KEY' ? 'Clé API invalide. Vérifie ta clé dans les paramètres.'
-                      : `Erreur : ${err.message}`;
+      const errorText = (err.message === 'NO_API_KEY' || err.message === 'NO_GROK_API_KEY')
+                        ? 'Clé API manquante. Configure ta clé dans les paramètres.'
+                        : (err.message === 'INVALID_API_KEY' || err.message === 'INVALID_GROK_KEY')
+                        ? 'Clé API invalide. Vérifie ta clé dans les paramètres.'
+                        : `Erreur : ${err.message}`;
       setMessages(prev => prev.map(m =>
         m.id === assistantId ? { ...m, text:errorText, streaming:false, error:true, actions:[] } : m
       ));
@@ -480,6 +496,7 @@ export default function Assistant() {
 
   const showQuickPrompts = messages.length <= 1 && !streaming && !loading;
   const activeSubject    = subjects.find(s => s.id === activeSubjectId);
+  const activeKey        = provider === 'grok' ? hasGrok : hasKey;
 
   return (
     <div style={{ height:'100%', display:'flex', overflow:'hidden', backgroundColor:'var(--bg)' }}>
@@ -512,11 +529,40 @@ export default function Assistant() {
             <Bot size={16} color="white"/>
           </div>
           <div style={{ flex:1 }}>
-            <p style={{ margin:0, fontWeight:700, fontSize:14 }}>Assistant Claude</p>
+            <p style={{ margin:0, fontWeight:700, fontSize:14 }}>
+              {provider === 'grok' ? '⚡ Assistant Grok' : '🤖 Assistant Claude'}
+            </p>
             <p style={{ margin:0, fontSize:10.5, color:'var(--muted)' }}>
-              {hasKey ? '✓ claude-opus-4-7 · Accès complet à tes données' : 'Clé API requise'}
+              {provider === 'grok'
+                ? (hasGrok ? `✓ ${grokModel} · Accès complet` : 'Clé xAI requise')
+                : (hasKey  ? '✓ claude-opus-4-7 · Accès complet' : 'Clé Anthropic requise')}
             </p>
           </div>
+
+          {/* Provider selector */}
+          <div style={{ display:'flex', gap:4, padding:3, backgroundColor:'var(--card)', borderRadius:8, border:'1px solid var(--border)' }}>
+            {[{ id:'claude', label:'🤖 Claude' }, { id:'grok', label:'⚡ Grok' }].map(p => (
+              <button key={p.id} onClick={() => { setProvider(p.id); newConversation(); }}
+                style={{
+                  padding:'4px 10px', borderRadius:6, border:'none', cursor:'pointer', fontSize:12, fontWeight:600,
+                  backgroundColor: provider === p.id ? 'var(--primary)' : 'transparent',
+                  color: provider === p.id ? '#fff' : 'var(--muted)',
+                  transition:'all 0.15s',
+                }}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Grok model selector */}
+          {provider === 'grok' && (
+            <select value={grokModel} onChange={e => setGrokModel(e.target.value)}
+              style={{ padding:'5px 8px', borderRadius:8, border:'1px solid var(--border)', background:'var(--card)', color:'var(--text)', fontSize:11.5, cursor:'pointer' }}>
+              <option value="grok-3">grok-3</option>
+              <option value="grok-3-mini">grok-3-mini</option>
+              <option value="grok-2">grok-2</option>
+            </select>
+          )}
 
           {/* Subject selector */}
           <select
@@ -540,14 +586,18 @@ export default function Assistant() {
         </div>
 
         {/* No key banner */}
-        {hasKey === false && (
+        {activeKey === false && (
           <div style={{ margin:'16px', padding:'14px 16px', backgroundColor:'var(--card)', border:'1px solid var(--border)', borderRadius:12, display:'flex', alignItems:'center', gap:12 }}>
             <div style={{ width:38, height:38, borderRadius:10, background:'linear-gradient(135deg, #f59e0b, #ef4444)', display:'flex', alignItems:'center', justifyContent:'center' }}>
               <Key size={17} color="white"/>
             </div>
             <div style={{ flex:1 }}>
-              <p style={{ margin:0, fontSize:13.5, fontWeight:600 }}>Clé API Claude manquante</p>
-              <p style={{ margin:'2px 0 0', fontSize:12, color:'var(--muted)' }}>Configure ta clé Anthropic pour activer l'assistant</p>
+              <p style={{ margin:0, fontSize:13.5, fontWeight:600 }}>
+                Clé API {provider === 'grok' ? 'Grok (xAI)' : 'Claude (Anthropic)'} manquante
+              </p>
+              <p style={{ margin:'2px 0 0', fontSize:12, color:'var(--muted)' }}>
+                {provider === 'grok' ? 'Obtiens une clé sur console.x.ai' : 'Obtiens une clé sur console.anthropic.com'}
+              </p>
             </div>
             <button onClick={() => setShowSetup(true)}
               style={{ padding:'7px 14px', borderRadius:8, border:'none', background:'var(--primary)', color:'white', fontSize:12.5, fontWeight:600, cursor:'pointer' }}>
@@ -631,10 +681,10 @@ export default function Assistant() {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKey}
-              placeholder={hasKey
+              placeholder={activeKey
                 ? (activeSubjectId ? `Question sur ${activeSubject?.name}…` : 'Pose ta question…')
                 : 'Configure ta clé API pour commencer…'}
-              disabled={streaming || loading || hasKey === false}
+              disabled={streaming || loading || activeKey === false}
               rows={1}
               style={{
                 flex:1, background:'none', border:'none', outline:'none',
@@ -649,11 +699,11 @@ export default function Assistant() {
               }}
             />
             <button onClick={() => sendMessage()}
-              disabled={!input.trim() || streaming || loading || hasKey === false}
+              disabled={!input.trim() || streaming || loading || activeKey === false}
               style={{
                 width:34, height:34, borderRadius:10, border:'none',
-                background: input.trim() && !streaming && !loading && hasKey ? 'var(--primary)' : 'var(--border)',
-                color:'white', cursor: input.trim() && !streaming && !loading && hasKey ? 'pointer' : 'default',
+                background: input.trim() && !streaming && !loading && activeKey ? 'var(--primary)' : 'var(--border)',
+                color:'white', cursor: input.trim() && !streaming && !loading && activeKey ? 'pointer' : 'default',
                 display:'flex', alignItems:'center', justifyContent:'center',
                 transition:'background 0.15s', flexShrink:0,
               }}

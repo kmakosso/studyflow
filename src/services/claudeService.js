@@ -16,21 +16,33 @@ import { db } from './db';
 import { buildRagContextCached } from './ragPipeline';
 
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
+const GROK_API_URL   = 'https://api.x.ai/v1/chat/completions';
 const DEFAULT_MODEL  = 'claude-opus-4-7';
 const ANTHROPIC_VER  = '2023-06-01';
 
-/* ─── API key management ─────────────────────────────────────────── */
+/* ─── Claude API key ─────────────────────────────────────────────── */
 
 export async function getApiKey() {
   return db.getSetting('claudeApiKey', null);
 }
-
 export async function setApiKey(key) {
   await db.setSetting('claudeApiKey', key?.trim() || '');
 }
-
 export async function hasApiKey() {
   const k = await getApiKey();
+  return !!(k && k.length > 10);
+}
+
+/* ─── Grok (xAI) API key ─────────────────────────────────────────── */
+
+export async function getGrokApiKey() {
+  return db.getSetting('grokApiKey', null);
+}
+export async function setGrokApiKey(key) {
+  await db.setSetting('grokApiKey', key?.trim() || '');
+}
+export async function hasGrokApiKey() {
+  const k = await getGrokApiKey();
   return !!(k && k.length > 10);
 }
 
@@ -263,6 +275,62 @@ export async function* streamMessage({ messages, system, maxTokens = 4096 }) {
   }
 }
 
+/* ─── Grok streaming (OpenAI-compatible format) ──────────────────── */
+
+export async function* streamGrok({ messages, system, model = 'grok-3', maxTokens = 4096 }) {
+  const apiKey = await getGrokApiKey();
+  if (!apiKey) throw new Error('NO_GROK_API_KEY');
+
+  const body = {
+    model,
+    max_tokens: maxTokens,
+    messages: [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      ...messages,
+    ],
+    stream: true,
+  };
+
+  const response = await fetch(GROK_API_URL, {
+    method: 'POST',
+    headers: {
+      'content-type':  'application/json',
+      'authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    if (response.status === 401) throw new Error('INVALID_GROK_KEY');
+    throw new Error(err?.error?.message || `Grok HTTP ${response.status}`);
+  }
+
+  const reader  = response.body.getReader();
+  const decoder = new TextDecoder();
+  let   buffer  = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (data === '[DONE]') return;
+      try {
+        const evt = JSON.parse(data);
+        const text = evt.choices?.[0]?.delta?.content;
+        if (text) yield text;
+      } catch { /* ignore */ }
+    }
+  }
+}
+
 /* ─── One-shot completion (non-streaming) ────────────────────────── */
 
 export async function complete({ messages, system, maxTokens = 4096 }) {
@@ -457,6 +525,10 @@ export const claude = {
   hasApiKey,
   getApiKey,
   setApiKey,
+  hasGrokApiKey,
+  getGrokApiKey,
+  setGrokApiKey,
+  streamGrok,
   chatWithContext,
   chatWithSubjectContext,
   analyzeDocument,
