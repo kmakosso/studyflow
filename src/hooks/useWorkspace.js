@@ -1,6 +1,7 @@
 /* ── Workspace hooks — Notes, Journal, Goals, Checklist ── */
 import { useState, useEffect, useCallback } from 'react';
 import { db } from '../services/db';
+import { useSyncRefresh } from './useSyncRefresh';
 
 /* ────────────────────────── NOTES ────────────────────────── */
 export function useNotes() {
@@ -12,6 +13,7 @@ export function useNotes() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   const save = async (note) => {
     const now  = new Date().toISOString();
@@ -42,6 +44,7 @@ export function useJournal() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   const saveEntry = async (entry) => {
     const now  = new Date().toISOString();
@@ -76,6 +79,7 @@ export function useGoals() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   const save = async (goal) => {
     const now  = new Date().toISOString();
@@ -117,6 +121,7 @@ export function useChecklist() {
   }, [today]);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);
 
   const add = async (text) => {
     const item = {

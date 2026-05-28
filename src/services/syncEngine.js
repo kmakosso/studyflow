@@ -23,13 +23,16 @@ import { db, getDB, onDbWrite, onDbDelete } from './db';
 import { supabase, isSupabaseConfigured } from './supabase';
 
 /* ─── Stores excluded from cloud sync ───────────────────────────── */
+/* Only stores that CANNOT safely sync are excluded:
+ *   settings      → contains API keys — must stay per-device
+ *   documentChunks → derived/large — rebuilt from documents.text
+ *   documentFiles  → raw binary blobs — too large for JSONB
+ * Everything else syncs across devices.
+ */
 const LOCAL_ONLY_STORES = new Set([
   'settings',
-  'documentChunks', // large, rebuilt locally from documents
-  'documentFiles',  // binary blobs — too large for JSON sync
-  'dailyLogs',
-  // NOTE: 'profile' and 'conversations' ARE synced — users expect them
-  // on every device they log into.
+  'documentChunks',
+  'documentFiles',
 ]);
 
 /* ─── Status callbacks ───────────────────────────────────────────── */
@@ -258,11 +261,13 @@ class SyncEngine {
   async pushAll() {
     if (!isSupabaseConfigured || !this._userId) return;
 
+    // Every store except the local-only ones (settings, documentChunks, documentFiles)
     const stores = [
       'subjects','courses','assignments','exams','grades','pomodoro',
       'reminders','revisions','notes','journal','goals','checklist',
       'documents','flashcards','quizzes',
-      'profile','conversations',   // user profile + AI chat history
+      'profile','conversations',
+      'dailyLogs','weeklyGoals',
     ];
 
     _emit('syncing');
