@@ -9,6 +9,7 @@ import {
 import { db } from '../services/db';
 import { claude } from '../services/claudeService';
 import { importDocument, ACCEPTED_TYPES, formatFileSize, getDocTypeLabel } from '../services/documentImporter';
+import { indexDocument } from '../services/ragPipeline';
 import { uploadDocument, deleteDocument as deleteStorageDoc } from '../services/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import ConsentModal from '../components/ConsentModal';
@@ -283,6 +284,11 @@ export default function Library() {
 
         // 1. Save metadata + extracted text to documents store (synced)
         await db.put('documents', parsed);
+
+        // 1b. Index text chunks for RAG (BM25 search) — non-blocking, best effort
+        if (parsed.text) {
+          indexDocument(parsed.id, parsed.text).catch(() => { /* ignore */ });
+        }
 
         // 2. Save the raw file Blob locally (never synced — stays on device)
         await db.put('documentFiles', { id: parsed.id, blob: file, name: file.name, mimeType: file.type });

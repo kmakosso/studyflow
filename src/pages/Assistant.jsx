@@ -427,7 +427,10 @@ export default function Assistant() {
   /* ── Voice recognition ── */
   const toggleVoice = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { notify('❌ Reconnaissance vocale non supportée sur ce navigateur.'); return; }
+    if (!SR) {
+      notify('❌ Micro non supporté sur ce navigateur. Utilise Chrome ou Edge.');
+      return;
+    }
 
     if (isListening) {
       recognitionRef.current?.stop();
@@ -439,18 +442,43 @@ export default function Assistant() {
     rec.lang = 'fr-FR';
     rec.continuous = false;
     rec.interimResults = true;
+    rec.maxAlternatives = 1;
+
     rec.onstart = () => setIsListening(true);
     rec.onend   = () => setIsListening(false);
+
     rec.onresult = (e) => {
-      const transcript = Array.from(e.results).map(r => r[0].transcript).join('');
+      const transcript = Array.from(e.results)
+        .map(r => r[0].transcript)
+        .join('');
       setInput(transcript);
+      // Auto-send if final result and not empty
+      if (e.results[e.results.length - 1]?.isFinal && transcript.trim()) {
+        // Small delay to let state settle
+        setTimeout(() => inputRef.current?.focus(), 100);
+      }
     };
+
     rec.onerror = (e) => {
       setIsListening(false);
-      if (e.error !== 'no-speech') notify(`❌ Erreur micro : ${e.error}`);
+      const messages = {
+        'network':       '❌ Erreur réseau : la reconnaissance vocale nécessite une connexion à Google. Tape ta question à la place.',
+        'not-allowed':   '❌ Permission micro refusée. Autorise le microphone dans les paramètres du navigateur.',
+        'audio-capture': '❌ Aucun microphone détecté.',
+        'aborted':       null, // user stopped — ignore
+        'no-speech':     null, // nothing heard — ignore
+      };
+      const msg = messages[e.error];
+      if (msg) notify(msg);
     };
+
     recognitionRef.current = rec;
-    rec.start();
+    try {
+      rec.start();
+    } catch (e) {
+      setIsListening(false);
+      notify('❌ Impossible de démarrer le microphone. Réessaie.');
+    }
   };
 
   /* ── Text-to-speech ── */

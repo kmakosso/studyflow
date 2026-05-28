@@ -56,23 +56,31 @@ export default function AIFlashcardModal({ onClose, onSaved, defaultSubjectId = 
     setGeneratedCards(null);
 
     try {
-      // Collect text chunks for selected documents
+      // Collect text from selected documents
+      // Primary source: doc.text (set at import by documentImporter)
+      // Secondary: documentChunks (only populated after a RAG query)
       const textParts = [];
       for (const docId of selectedDocIds) {
-        const chunks = await db.byIndex('documentChunks', 'documentId', docId);
-        if (chunks.length > 0) {
-          const sorted = chunks.sort((a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0));
-          textParts.push(sorted.map(c => c.content || '').join('\n\n'));
+        const doc = await db.get('documents', docId);
+
+        if (doc?.text && doc.text.trim().length > 30) {
+          // Best case: full text stored on import
+          textParts.push(doc.text.trim());
         } else {
-          // Fallback to the document's stored content field
-          const doc = await db.get('documents', docId);
-          if (doc?.content) textParts.push(doc.content);
+          // Fallback: reassemble from chunks (if RAG has been triggered before)
+          const chunks = await db.byIndex('documentChunks', 'documentId', docId);
+          if (chunks.length > 0) {
+            const sorted = chunks.sort((a, b) => (a.chunkIndex || 0) - (b.chunkIndex || 0));
+            textParts.push(sorted.map(c => c.content || '').join('\n\n'));
+          } else if (doc?.textPreview) {
+            textParts.push(doc.textPreview); // last resort
+          }
         }
       }
 
       const combinedText = textParts.join('\n\n---\n\n').trim();
       if (!combinedText) {
-        setError('Ces documents ne contiennent pas de texte extractible. Réessaie avec d\'autres fichiers.');
+        setError('Ces documents ne contiennent pas de texte extractible (images non supportées pour la génération de fiches). Utilise des PDF, DOCX ou TXT.');
         return;
       }
 
