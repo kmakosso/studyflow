@@ -1,18 +1,73 @@
 import { generatePlan } from './scheduler.js';
 import { isWeekend }   from 'date-fns';
 
+/* ─── Time / course helpers ──────────────────────────────────────── */
+
+function timeToMin(t = '00:00') {
+  const [h, m] = (t || '00:00').split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+/** Parse slot.start like "08h" → 8 */
+function parseSlotStartH(s = '08h') { return parseInt(s, 10) || 0; }
+
+/**
+ * Return how many hours of `course` overlap with `slot`.
+ * slot.start is like "08h", slot.hours is the slot duration.
+ * course.startTime / course.endTime are "HH:MM" strings.
+ */
+function courseBlockedHoursInSlot(course, slot) {
+  if (!course.startTime || !course.endTime) return 0;
+  const cStart  = timeToMin(course.startTime);
+  const cEnd    = timeToMin(course.endTime);
+  const sStart  = parseSlotStartH(slot.start) * 60;
+  const sEnd    = sStart + slot.hours * 60;
+  const overlap = Math.max(0, Math.min(cEnd, sEnd) - Math.max(cStart, sStart));
+  return overlap / 60;
+}
+
+/** Total class hours for a given day (across all courses) */
+function totalCourseHours(courses) {
+  return courses.reduce((sum, c) => {
+    if (!c.startTime || !c.endTime) return sum;
+    return sum + (timeToMin(c.endTime) - timeToMin(c.startTime)) / 60;
+  }, 0);
+}
+
 /* ─── Slot helpers ───────────────────────────────────────────────── */
 
-export function getDayHours(date, slotConfig) {
+/**
+ * Compute free study hours for a given day.
+ * Subtracts the class-time that overlaps each active slot.
+ *
+ * @param {string}   date        - "YYYY-MM-DD"
+ * @param {object}   slotConfig  - { weekday: Slot[], weekend: Slot[] }
+ * @param {object[]} busyCourses - courses for that day (with startTime, endTime)
+ */
+export function getDayHours(date, slotConfig, busyCourses = []) {
   const key = isWeekend(new Date(date)) ? 'weekend' : 'weekday';
   return slotConfig[key]
     .filter(s => s.enabled)
-    .reduce((sum, s) => sum + s.hours, 0);
+    .reduce((sum, s) => {
+      const blocked = busyCourses.reduce((b, c) => b + courseBlockedHoursInSlot(c, s), 0);
+      return sum + Math.max(0, s.hours - blocked);
+    }, 0);
 }
 
-function getActiveSlots(date, slotConfig) {
+/**
+ * Return active slots with hours reduced by course overlap.
+ * Slots whose free hours drop to ≤ 0.1 are excluded entirely.
+ */
+function getActiveSlots(date, slotConfig, busyCourses = []) {
   const key = isWeekend(new Date(date)) ? 'weekend' : 'weekday';
-  return slotConfig[key].filter(s => s.enabled);
+  return slotConfig[key]
+    .filter(s => s.enabled)
+    .map(s => {
+      const blocked = busyCourses.reduce((b, c) => b + courseBlockedHoursInSlot(c, s), 0);
+      const free    = Math.max(0, s.hours - blocked);
+      return { ...s, hours: Math.round(free * 10) / 10, blockedHours: Math.round(blocked * 10) / 10 };
+    })
+    .filter(s => s.hours > 0.1);
 }
 
 /** Distribute a flat task list into available slots for one day.
@@ -40,7 +95,7 @@ function assignSlots(tasks, slots) {
         si++;
         left = slots[si].hours;
       } else if (left <= 0.05) {
-        // No more slots — just attach remaining to last slot
+        // No more slots — attach remaining to last slot
         if (remaining > 0.05) {
           result.push({
             ...task,
@@ -59,8 +114,21 @@ function assignSlots(tasks, slots) {
 
 /* ─── Main planner ───────────────────────────────────────────────── */
 
-export function generateAIPlan(assignments, exams, config = {}, subjects = [], profile = null, slotConfig = null) {
-  // Compute representative hours/day from slot config
+/**
+ * @param {object[]} assignments
+ * @param {object[]} exams
+ * @param {object}   config      - { hoursPerDay, days, ... }
+ * @param {object[]} subjects
+ * @param {object|null} profile
+ * @param {object|null} slotConfig  - { weekday: Slot[], weekend: Slot[] }
+ * @param {object}   busyPerDay  - map "YYYY-MM-DD" → course[] (with startTime, endTime)
+ *                                 Used to subtract class time from each day's available slots.
+ */
+export function generateAIPlan(
+  assignments, exams, config = {}, subjects = [],
+  profile = null, slotConfig = null, busyPerDay = {},
+) {
+  // Compute representative hours/day from slot config (without course subtraction — just for reference)
   let hoursPerDay;
   if (slotConfig) {
     const wd = slotConfig.weekday.filter(s => s.enabled).reduce((a, s) => a + s.hours, 0);
@@ -72,22 +140,45 @@ export function generateAIPlan(assignments, exams, config = {}, subjects = [], p
       : 3);
   }
 
-  const base = generatePlan(assignments, exams, { ...config, hoursPerDay }, subjects);
+  // Build per-day capacity map (slot hours minus course overlap)
+  const dayCapacity = {};
+  if (slotConfig) {
+    const numDays = config.days || 14;
+    const today   = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (let i = 0; i < numDays; i++) {
+      const d       = new Date(today);
+      d.setDate(today.getDate() + i);
+      const dateStr = d.toISOString().split('T')[0];
+      dayCapacity[dateStr] = getDayHours(dateStr, slotConfig, busyPerDay[dateStr] || []);
+    }
+  }
+
+  const base = generatePlan(
+    assignments, exams,
+    { ...config, hoursPerDay },
+    subjects,
+    dayCapacity,  // scheduler now respects per-day reduced capacity
+  );
 
   // Annotate each day + distribute into slots
   const enhanced = base.map(day => {
-    const dayHours  = slotConfig ? getDayHours(day.date, slotConfig) : hoursPerDay;
-    const slots     = slotConfig ? getActiveSlots(day.date, slotConfig) : [];
-    const slotTasks = slotConfig ? assignSlots(day.tasks, slots) : day.tasks;
+    const busyCourses = busyPerDay[day.date] || [];
+    const dayHours    = slotConfig ? getDayHours(day.date, slotConfig, busyCourses) : hoursPerDay;
+    const slots       = slotConfig ? getActiveSlots(day.date, slotConfig, busyCourses) : [];
+    const slotTasks   = slotConfig ? assignSlots(day.tasks, slots) : day.tasks;
+    const classH      = Math.round(totalCourseHours(busyCourses) * 10) / 10;
 
     return {
       ...day,
-      tasks:             slotTasks,
-      availableHours:    dayHours,
-      overloaded:        day.totalHours > dayHours * 1.2,
-      underloaded:       day.tasks.length > 0 && day.totalHours < dayHours * 0.3,
+      tasks:              slotTasks,
+      availableHours:     dayHours,
+      courseHours:        classH,        // hours blocked by classes
+      courses:            busyCourses,   // raw course list for display
+      overloaded:         day.totalHours > dayHours * 1.2,
+      underloaded:        day.tasks.length > 0 && day.totalHours < dayHours * 0.3,
       suggestedPomodoros: Math.ceil(day.totalHours * 60 / Math.max(15, profile?.avgFocusDuration || 25)),
-      isWeekend:         isWeekend(new Date(day.date)),
+      isWeekend:          isWeekend(new Date(day.date)),
     };
   });
 
@@ -103,6 +194,19 @@ export function generateAIPlan(assignments, exams, config = {}, subjects = [], p
     });
   }
 
+  const busyDays = Object.values(busyPerDay).filter(cs => cs.length > 0).length;
+  if (busyDays > 0) {
+    const totalClassH = Object.values(busyPerDay)
+      .flat()
+      .reduce((sum, c) => sum + (c.startTime && c.endTime
+        ? (timeToMin(c.endTime) - timeToMin(c.startTime)) / 60 : 0), 0);
+    suggestions.push({
+      type:     'schedule',
+      severity: 'info',
+      message:  `📚 Emploi du temps pris en compte : ${busyDays} jour${busyDays > 1 ? 's' : ''} de cours (${Math.round(totalClassH * 10) / 10}h au total) — les créneaux de cours sont exclus du planning`,
+    });
+  }
+
   if (slotConfig) {
     const wd = slotConfig.weekday.filter(s => s.enabled).reduce((a, s) => a + s.hours, 0);
     const we = slotConfig.weekend.filter(s => s.enabled).reduce((a, s) => a + s.hours, 0);
@@ -110,7 +214,7 @@ export function generateAIPlan(assignments, exams, config = {}, subjects = [], p
       suggestions.push({
         type:     'slots',
         severity: 'info',
-        message:  `Créneaux configurés : semaine ${wd}h/jour · weekend ${we}h/jour — soit ~${hoursPerDay}h/jour en moyenne`,
+        message:  `Créneaux configurés : semaine ${wd}h/jour · weekend ${we}h/jour — soit ~${hoursPerDay}h/jour en moyenne (avant déduction des cours)`,
       });
     }
     const noWeekend = we === 0;

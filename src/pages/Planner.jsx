@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Wand2, Calendar, Clock, Zap, RefreshCw, User, Bot, Download, Loader } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Wand2, Calendar, Clock, Zap, RefreshCw, User, Bot, Download, Loader, BookOpen } from 'lucide-react';
 import { format, parseISO, addDays, startOfDay } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { generateAIPlan, rebalancePlan } from '../services/plannerAI';
@@ -8,6 +8,7 @@ import { useAssignments }  from '../hooks/useAssignments';
 import { useExams }        from '../hooks/useExams';
 import { useSubjects }     from '../hooks/useSubjects';
 import { useIntelligence } from '../contexts/IntelligenceContext';
+import { useSchedule, toDateStr } from '../hooks/useSchedule';
 import { SEVERITY_COLOR, SEVERITY_BG } from '../services/rulesEngine';
 import ApiKeySetup from '../components/ApiKeySetup';
 
@@ -184,27 +185,47 @@ function DayCard({ day, isAIMode }) {
         return Object.values(bySlot);
       })();
 
-  const isWeekend = day.isWeekend ?? false;
+  const isWeekendDay = day.isWeekend ?? false;
   const totalH    = isAIMode
     ? (day.slots || []).flatMap(s => s.tasks || []).reduce((a, t) => a + (t.hours || 0), 0)
     : day.totalHours || 0;
+  const dayCourses   = day.courses || [];
+  const courseH      = day.courseHours || 0;
 
   return (
     <div className="card" style={{
-      borderLeft:`3px solid ${isWeekend ? '#10b981' : 'var(--primary)'}`,
+      borderLeft:`3px solid ${isWeekendDay ? '#10b981' : 'var(--primary)'}`,
       padding:'16px 18px',
     }}>
       {/* Header */}
       <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
-        <Calendar size={14} color={isWeekend ? '#10b981' : 'var(--primary)'}/>
+        <Calendar size={14} color={isWeekendDay ? '#10b981' : 'var(--primary)'}/>
         <span style={{ fontWeight:700, fontSize:15, textTransform:'capitalize', flex:1 }}>
           {format(parseISO(day.date), 'EEEE d MMMM', { locale:fr })}
-          {isWeekend && <span style={{ fontSize:11, marginLeft:8, color:'#10b981', fontWeight:600 }}>Weekend</span>}
+          {isWeekendDay && <span style={{ fontSize:11, marginLeft:8, color:'#10b981', fontWeight:600 }}>Weekend</span>}
         </span>
         <span style={{ display:'flex', alignItems:'center', gap:4, fontSize:12, color:'var(--muted)' }}>
-          <Clock size={11}/> {totalH.toFixed(1)}h
+          <Clock size={11}/> {totalH.toFixed(1)}h étude
         </span>
       </div>
+
+      {/* Courses already scheduled (read from timetable) */}
+      {dayCourses.length > 0 && (
+        <div style={{
+          marginBottom:10, padding:'7px 12px', borderRadius:8,
+          backgroundColor:'#10b98112', border:'1px solid #10b98133',
+          display:'flex', flexWrap:'wrap', gap:6,
+        }}>
+          <span style={{ fontSize:11.5, fontWeight:700, color:'#10b981', marginRight:2 }}>
+            🏫 Cours ({courseH.toFixed(1)}h) :
+          </span>
+          {dayCourses.map((c, i) => (
+            <span key={i} style={{ fontSize:11, color:'#059669', backgroundColor:'#10b98120', borderRadius:4, padding:'1px 7px' }}>
+              {c.startTime}–{c.endTime} {c.subjectName || ''}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Daily tip (AI mode) */}
       {isAIMode && day.dailyTip && (
@@ -265,10 +286,11 @@ function DayCard({ day, isAIMode }) {
 /* ─── Main component ──────────────────────────────────────────────── */
 
 export default function Planner() {
-  const { assignments }  = useAssignments();
-  const { exams }        = useExams();
-  const { subjects }     = useSubjects();
-  const { profile }      = useIntelligence();
+  const { assignments }            = useAssignments();
+  const { exams }                  = useExams();
+  const { subjects }               = useSubjects();
+  const { profile }                = useIntelligence();
+  const { forDateStr, weekType }   = useSchedule();
 
   const [slotConfig,  setSlotConfig]  = useState(DEFAULT_SLOTS);
   const [days,        setDays]        = useState(14);
@@ -281,6 +303,28 @@ export default function Planner() {
   const [error,       setError]       = useState('');
   const [showSetup,   setShowSetup]   = useState(false);
   const [notification, setNotification] = useState('');
+
+  // Build a map "YYYY-MM-DD" → courses[] for the planning horizon
+  // Uses forDateStr from useSchedule so it respects weekType (A/B) and recurring courses
+  const busyPerDay = useMemo(() => {
+    const busy  = {};
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (let i = 0; i < days; i++) {
+      const d       = new Date(today);
+      d.setDate(today.getDate() + i);
+      const dateStr = toDateStr(d);
+      busy[dateStr] = forDateStr(dateStr, weekType).map(c => ({
+        ...c,
+        subjectName: subjects.find(s => s.id === c.subjectId)?.name || '',
+      }));
+    }
+    return busy;
+  }, [days, forDateStr, weekType, subjects]);
+
+  // Count of days that have at least one course in the horizon
+  const busyDayCount      = Object.values(busyPerDay).filter(cs => cs.length > 0).length;
+  const totalCourseSlots  = Object.values(busyPerDay).flat().length;
 
   const mutateSlot = (type, id, key, value) => {
     setSlotConfig(prev => ({
@@ -304,7 +348,8 @@ export default function Planner() {
       ...e,
       importanceHours: e.importance === 'high' ? 4 : e.importance === 'medium' ? 2.5 : 1.5,
     }));
-    const r = generateAIPlan(pending, futureExams, { days }, subjects, profile, slotConfig);
+    // Pass busyPerDay so the algo subtracts class hours from each day's capacity
+    const r = generateAIPlan(pending, futureExams, { days }, subjects, profile, slotConfig, busyPerDay);
     setResult(r); setAiPlan(null);
   };
 
@@ -320,15 +365,17 @@ export default function Planner() {
         days,
         provider:   aiMode,
         grokModel,
+        busyPerDay,   // ← inject timetable into the AI prompt
         onProgress: (chars) => setProgress(Math.min(95, Math.round(chars / 50))),
       });
       if (!plan || plan.length === 0) {
         setError("L'IA n'a pas pu générer de planning. Vérifie ta clé API et réessaie.");
       } else {
-        // Enrich AI plan with isWeekend flag
+        // Enrich AI plan with isWeekend flag + course info from timetable
         const enriched = plan.map(day => ({
           ...day,
           isWeekend: [0, 6].includes(new Date(day.date + 'T12:00:00').getDay()),
+          courses:   busyPerDay[day.date] || [],   // attach real courses for display
         }));
         setAiPlan(enriched);
       }
@@ -483,6 +530,16 @@ export default function Planner() {
           ].map(([label, color]) => (
             <span key={label} style={{ fontSize:12, padding:'3px 10px', borderRadius:20, backgroundColor:color+'22', color }}>{label}</span>
           ))}
+          {/* Timetable chip — shows if the user has courses loaded */}
+          {totalCourseSlots > 0 ? (
+            <span style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, padding:'3px 10px', borderRadius:20, backgroundColor:'#10b98122', color:'#10b981', fontWeight:600 }}>
+              <BookOpen size={11}/> {busyDayCount} jour{busyDayCount > 1 ? 's' : ''} de cours pris en compte
+            </span>
+          ) : (
+            <span style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, padding:'3px 10px', borderRadius:20, backgroundColor:'var(--border)', color:'var(--muted)' }}>
+              <BookOpen size={11}/> Aucun cours dans l'emploi du temps
+            </span>
+          )}
         </div>
       </div>
 

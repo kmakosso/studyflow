@@ -432,16 +432,43 @@ export async function completeGrok({ messages, system, model = 'grok-3', maxToke
 /* ─── AI Study Plan (Claude or Grok) ─────────────────────────────── */
 /* Generates a day-by-day JSON plan from real AI, not just an algorithm */
 
+/**
+ * Build a schedule block describing class times per day.
+ * Used in the AI planning prompt so Claude/Grok won't schedule study during class time.
+ */
+function buildScheduleBlock(busyPerDay = {}, subjects = []) {
+  const subMap = Object.fromEntries(subjects.map(s => [s.id, s]));
+  const lines  = [];
+
+  for (const [dateStr, courses] of Object.entries(busyPerDay).sort()) {
+    if (!courses.length) continue;
+    const d     = new Date(dateStr + 'T12:00:00');
+    const label = d.toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' });
+    const courseStrs = courses
+      .map(c => {
+        const name = subMap[c.subjectId]?.name || c.subjectName || c.subjectId || 'Cours';
+        return `${c.startTime || '?'}–${c.endTime || '?'} ${name}${c.room ? ` (${c.room})` : ''}`;
+      })
+      .join(', ');
+    lines.push(`  - ${label} : ${courseStrs}`);
+  }
+
+  return lines.length > 0
+    ? `\n## ⚠️ Emploi du temps — Créneaux de cours (NE PLANIFIE AUCUNE TÂCHE sur ces horaires)\n${lines.join('\n')}\n`
+    : '';
+}
+
 export async function generateStudyPlanFromAI({
   assignments, exams, subjects, slotConfig, days = 14,
   provider = 'claude', grokModel = 'grok-3', onProgress,
+  busyPerDay = {},   // map "YYYY-MM-DD" → course[] with startTime, endTime
 }) {
   const today         = new Date().toISOString().split('T')[0];
   const contextBlock  = await buildAcademicContext();
 
   const slotDesc = (slots) => slots
     .filter(s => s.enabled)
-    .map(s => `  • ${s.label} (${s.start}–${s.end}) : ${s.hours}h`)
+    .map(s => `  • ${s.label} (${s.start}–${s.end}) : ${s.hours}h disponibles`)
     .join('\n') || '  Aucun créneau';
 
   const assignList = assignments
@@ -460,6 +487,9 @@ export async function generateStudyPlanFromAI({
       return `- [${e.date}] Examen ${s?.name || '?'} : ${e.title} (importance: ${e.importance || 'medium'})`;
     }).join('\n') || '  Aucun examen à venir';
 
+  const scheduleBlock = buildScheduleBlock(busyPerDay, subjects);
+  const hasCourses    = scheduleBlock.length > 0;
+
   const system = buildSystemPrompt(contextBlock);
   const prompt = `Tu es un expert en planification académique. Génère un planning de travail détaillé pour les ${days} prochains jours à partir d'aujourd'hui (${today}).
 
@@ -469,16 +499,17 @@ ${assignList}
 ## Examens à venir
 ${examList}
 
-## Créneaux disponibles
+## Créneaux d'étude disponibles (HORS heures de cours)
 Lundi–Vendredi :
 ${slotDesc(slotConfig.weekday)}
 Samedi & Dimanche :
 ${slotDesc(slotConfig.weekend)}
-
+${scheduleBlock}
 ## Instructions
 - Répartis intelligemment les devoirs selon leur date limite (urgence prioritaire)
 - Commence les révisions d'examen au moins 5 jours avant la date
 - Respecte les créneaux disponibles (ne planifie pas si aucun créneau n'est actif ce jour-là)
+${hasCourses ? '- ⚠️ IMPORTANT : ne place AUCUNE tâche d\'étude pendant les créneaux de cours listés ci-dessus\n- Pour les jours avec beaucoup de cours, réduis la charge d\'étude en conséquence' : ''}
 - Pour chaque tâche, donne un conseil pratique court et un objectif clair
 - Ajoute un message de motivation court pour chaque jour
 

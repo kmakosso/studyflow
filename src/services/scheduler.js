@@ -4,12 +4,14 @@ const PRIORITY_WEIGHT = { high: 3, medium: 2, low: 1 };
 
 /**
  * Generate an optimized study plan.
- * @param {object[]} assignments - pending assignments with dueDate, priority, estimatedHours
- * @param {object[]} exams       - upcoming exams with date, subjectName, importance
- * @param {object}   config      - { hoursPerDay: number, startDate: Date, days: number }
- * @param {object[]} subjects    - for name lookup
+ * @param {object[]} assignments  - pending assignments with dueDate, priority, estimatedHours
+ * @param {object[]} exams        - upcoming exams with date, subjectName, importance
+ * @param {object}   config       - { hoursPerDay: number, startDate: Date, days: number }
+ * @param {object[]} subjects     - for name lookup
+ * @param {object}   dayCapacity  - optional map { "YYYY-MM-DD": freeHours } — overrides hoursPerDay per day
+ *                                  (pass reduced hours after subtracting class time)
  */
-export function generatePlan(assignments, exams, config = {}, subjects = []) {
+export function generatePlan(assignments, exams, config = {}, subjects = [], dayCapacity = {}) {
   const {
     hoursPerDay = 3,
     startDate   = new Date(),
@@ -72,13 +74,15 @@ export function generatePlan(assignments, exams, config = {}, subjects = []) {
   for (let d = 0; d < days; d++) {
     const date      = addDays(today, d);
     const dateStr   = format(date, 'yyyy-MM-dd');
+    // Use per-day capacity (class-adjusted) when provided, otherwise default hoursPerDay
+    const cap       = dateStr in dayCapacity ? dayCapacity[dateStr] : hoursPerDay;
     const dayTasks  = [];
-    let hoursLeft   = hoursPerDay;
+    let hoursLeft   = cap;
 
     for (const t of tasks) {
       if (assigned.has(t.id)) continue;
       if (t.targetDay !== undefined && t.targetDay !== d) continue;
-      if (hoursLeft <= 0) break;
+      if (hoursLeft <= 0.05) break;
 
       const alloc = Math.min(t.hours, hoursLeft);
       dayTasks.push({ ...t, allocHours: Math.round(alloc * 10) / 10 });
@@ -87,7 +91,7 @@ export function generatePlan(assignments, exams, config = {}, subjects = []) {
     }
 
     if (dayTasks.length > 0 || d === 0) {
-      plan.push({ date: dateStr, tasks: dayTasks, totalHours: hoursPerDay - hoursLeft });
+      plan.push({ date: dateStr, tasks: dayTasks, totalHours: cap - hoursLeft });
     }
   }
 
