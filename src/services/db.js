@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME    = 'studyflow_v1';
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 
 let _db = null;
 
@@ -65,9 +65,13 @@ async function getDB() {
       }
 
       // V7 additions — raw file blobs (local-only, never synced to Supabase)
-      // Stores the original File/Blob so users can re-download their documents.
       if (oldVersion < 7) {
         ensure('documentFiles', []);
+      }
+
+      // V8 additions — AI conversation history
+      if (oldVersion < 8) {
+        ensure('conversations', ['updatedAt', 'subjectId']);
       }
     },
   });

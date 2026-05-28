@@ -44,14 +44,19 @@ export async function buildAcademicContext() {
   const today = new Date().toISOString().split('T')[0];
   const now   = new Date();
 
-  // Load minimal data (no document content)
-  const [subjects, assignments, exams, grades, revisions, pomodoro] = await Promise.all([
+  // Load all relevant data for comprehensive context
+  const [subjects, assignments, exams, grades, revisions, pomodoro,
+         notes, goals, reminders, documents] = await Promise.all([
     db.all('subjects'),
     db.all('assignments'),
     db.all('exams'),
     db.all('grades'),
     db.all('revisions'),
     db.all('pomodoro'),
+    db.all('notes'),
+    db.all('goals'),
+    db.all('reminders'),
+    db.all('documents'),
   ]);
 
   // Filter relevant upcoming items
@@ -83,35 +88,99 @@ export async function buildAcademicContext() {
     .filter(r => r.nextReview && r.nextReview <= today && r.status !== 'mastered')
     .slice(0, 5);
 
+  // Upcoming reminders
+  const upcomingReminders = reminders
+    .filter(r => !r.triggered && r.datetime >= today)
+    .sort((a, b) => a.datetime.localeCompare(b.datetime))
+    .slice(0, 5);
+
+  // Notes summary
+  const recentNotes = notes
+    .sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''))
+    .slice(0, 8);
+
+  // Active goals
+  const activeGoals = goals.filter(g => !g.completed).slice(0, 5);
+
+  // Documents list
+  const docsBySubject = {};
+  for (const d of documents) {
+    const key = d.subjectId || 'none';
+    if (!docsBySubject[key]) docsBySubject[key] = [];
+    docsBySubject[key].push(d.name);
+  }
+
+  // All assignments (not just urgent)
+  const allPending = assignments
+    .filter(a => a.status !== 'done')
+    .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+
+  const completedAssignments = assignments.filter(a => a.status === 'done');
+
   // Build text block
   const lines = [
     `Date du jour : ${today}`,
     '',
     '## Matières',
     ...subjects.map(s => {
-      const gList = gradesBySubject[s.id] || [];
-      const avg   = gList.length ? (gList.reduce((a, b) => a + b, 0) / gList.length).toFixed(1) : '—';
-      return `- ${s.name} (coefficient ${s.coefficient ?? 1}, moyenne : ${avg}/20)`;
+      const gList  = gradesBySubject[s.id] || [];
+      const avg    = gList.length ? (gList.reduce((a, b) => a + b, 0) / gList.length).toFixed(1) : '—';
+      const docs   = docsBySubject[s.id] || [];
+      return `- ${s.name} (coeff ${s.coefficient ?? 1}, moyenne : ${avg}/20${docs.length ? `, ${docs.length} document(s)` : ''})`;
     }),
+    subjects.length === 0 ? '- Aucune matière créée' : '',
+    '',
+    '## Tous les devoirs en cours',
+    ...allPending.map(a => {
+      const subj = subjects.find(s => s.id === a.subjectId)?.name ?? '?';
+      const late  = a.dueDate < today ? ' ⚠️ EN RETARD' : '';
+      return `- [${a.status}] ${a.dueDate} — ${subj} : ${a.title}${late}`;
+    }),
+    allPending.length === 0 ? '- Aucun devoir en cours' : '',
+    `(${completedAssignments.length} devoir(s) terminé(s) au total)`,
     '',
     '## Examens à venir',
     ...upcomingExams.map(e => {
       const subj = subjects.find(s => s.id === e.subjectId)?.name ?? '?';
-      return `- ${e.date} — ${subj} : ${e.title}`;
+      const days  = Math.ceil((new Date(e.date) - now) / 86400000);
+      return `- ${e.date} — ${subj} : ${e.title} (dans ${days} jour(s))`;
     }),
     upcomingExams.length === 0 ? '- Aucun examen à venir' : '',
     '',
-    '## Devoirs urgents',
-    ...urgentAssignments.map(a => {
-      const subj = subjects.find(s => s.id === a.subjectId)?.name ?? '?';
-      return `- ${a.dueDate} — ${subj} : ${a.title}`;
-    }),
-    urgentAssignments.length === 0 ? '- Aucun devoir urgent' : '',
+    `## Travail cette semaine`,
+    `${weekMinutes} minutes de travail · ${weekSessions.length} sessions Pomodoro`,
+    `Total toutes sessions : ${pomodoro.length}`,
     '',
-    `## Travail cette semaine : ${weekMinutes} minutes (${weekSessions.length} sessions Pomodoro)`,
+    '## Révisions (fiches SRS)',
+    `Total : ${revisions.length} fiches`,
+    `À revoir aujourd'hui : ${dueRevisions.length}`,
+    `Maîtrisées : ${revisions.filter(r => r.status === 'mastered').length}`,
+    `En cours d'apprentissage : ${revisions.filter(r => r.status === 'learning').length}`,
     '',
-    dueRevisions.length > 0 ? `## Révisions en retard : ${dueRevisions.length} fiche(s) à revoir` : '',
-  ].filter(l => l !== undefined);
+    ...(recentNotes.length > 0 ? [
+      '## Notes récentes',
+      ...recentNotes.map(n => `- "${n.title || 'Sans titre'}" (${n.content?.slice(0, 80) || ''}…)`),
+      '',
+    ] : []),
+    ...(activeGoals.length > 0 ? [
+      '## Objectifs actifs',
+      ...activeGoals.map(g => `- ${g.text || g.title || JSON.stringify(g)}`),
+      '',
+    ] : []),
+    ...(upcomingReminders.length > 0 ? [
+      '## Rappels à venir',
+      ...upcomingReminders.map(r => `- ${r.datetime} : ${r.title || r.text}`),
+      '',
+    ] : []),
+    ...(documents.length > 0 ? [
+      '## Bibliothèque de documents',
+      ...subjects.map(s => {
+        const docs = docsBySubject[s.id] || [];
+        return docs.length ? `- ${s.name} : ${docs.join(', ')}` : null;
+      }).filter(Boolean),
+      docsBySubject['none']?.length ? `- Sans matière : ${docsBySubject['none'].join(', ')}` : null,
+    ].filter(Boolean) : []),
+  ].filter(l => l !== undefined && l !== null);
 
   return lines.join('\n');
 }
