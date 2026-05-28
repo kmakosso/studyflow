@@ -25,6 +25,7 @@ const QUICK_PROMPTS = [
 /* ─── Action detector ────────────────────────────────────────────── */
 function detectActions(text) {
   const actions = [];
+
   // Flashcards: JSON array with "front"/"back" keys
   const fcMatch = text.match(/\[[\s\S]{10,}?"front"[\s\S]*?"back"[\s\S]*?\]/);
   if (fcMatch) {
@@ -35,6 +36,7 @@ function detectActions(text) {
       }
     } catch { /* ignore */ }
   }
+
   // QCM: JSON array with "question"/"choices" keys
   const quizMatch = text.match(/\[[\s\S]{10,}?"question"[\s\S]*?"choices"[\s\S]*?\]/);
   if (quizMatch && !fcMatch) {
@@ -45,6 +47,18 @@ function detectActions(text) {
       }
     } catch { /* ignore */ }
   }
+
+  // "Actions possibles" section detected → add quick-action shortcuts
+  if (text.includes('Actions possibles') || text.includes('actions possibles')) {
+    if (!fcMatch) {
+      actions.push({ type: 'quick_flashcards', label: '✅ Créer des fiches de révision', data: null });
+    }
+    if (!quizMatch) {
+      actions.push({ type: 'quick_quiz',       label: '🧠 Générer un quiz',             data: null });
+    }
+    actions.push({ type: 'quick_simplify', label: '🔁 Version encore plus simple', data: null });
+  }
+
   return actions;
 }
 
@@ -310,18 +324,20 @@ function HistorySidebar({ conversations, activeId, onSelect, onNew, onDelete, co
 }
 
 /* ─── Welcome message ────────────────────────────────────────────── */
-const WELCOME_TEXT = `Bonjour ! Je suis **Claude**, ton assistant académique dans StudyFlow.
+const WELCOME_TEXT = `👋 Bonjour ! Je suis ton **assistant de révision** dans StudyFlow.
 
-J'ai accès à l'ensemble de tes données : matières, devoirs, examens, notes, révisions, documents, objectifs et rappels.
+Je ne suis pas un cours ou un manuel — je suis un **prof sympa** qui t'explique simplement, avec des exemples concrets, comme à l'oral.
 
-Je peux t'aider à :
-- **Organiser ta semaine** et prioriser tes tâches
-- **Créer des plannings** adaptés à tes examens
-- **Analyser tes résultats** et suggérer des améliorations
-- **Générer des fiches et QCM** que tu peux sauvegarder directement
-- **Répondre à toutes tes questions** académiques
+🎯 **Ce que je fais pour toi :**
+- Expliquer n'importe quelle notion en **30 secondes chrono**
+- Créer des **fiches mémorisables** (pas des pavés indigestes)
+- Générer des **quiz** pour tester tes connaissances
+- Analyser ta **semaine, tes devoirs, tes examens**
+- Répondre à tes questions **avec des exemples du quotidien**
 
-Sélectionne une matière pour un contexte ciblé, ou pose ta question directement !`;
+📷 Tu peux aussi **envoyer une photo** de tes notes ou d'un exercice, je l'analyse !
+
+Sélectionne une matière pour un contexte ciblé, ou pose ta question — je m'adapte à toi !`;
 
 /* ─── Main component ─────────────────────────────────────────────── */
 export default function Assistant() {
@@ -507,13 +523,18 @@ export default function Assistant() {
             id:         crypto.randomUUID(),
             front:      card.front,
             back:       card.back,
+            difficulty: card.difficulty || 'medium',
             subjectId:  subjectId || null,
             status:     'unseen',
+            interval:   0,
+            ease:       2.5,
             nextReview: new Date().toISOString().split('T')[0],
             createdAt:  new Date().toISOString(),
+            source:     'ai-assistant',
           });
         }
         notify(`✅ ${action.data.length} fiche(s) sauvegardée(s) dans Révisions !`);
+        return;
       }
 
       if (action.type === 'quiz') {
@@ -525,7 +546,18 @@ export default function Assistant() {
           createdAt: new Date().toISOString(),
         });
         notify(`✅ QCM sauvegardé (${action.data.length} questions) !`);
+        return;
       }
+
+      // Quick follow-up actions (trigger a new message)
+      const followUps = {
+        quick_flashcards: 'Génère maintenant 10 flashcards sur ce sujet au format JSON [{"front":"…","back":"…","difficulty":"easy|medium|hard"}].',
+        quick_quiz:       'Génère un QCM de 5 questions sur ce sujet au format JSON [{"question":"…","choices":["A:…","B:…","C:…","D:…"],"answer":"A","explanation":"…"}].',
+        quick_simplify:   'Explique la même notion mais encore plus simplement, avec des mots encore plus accessibles et un exemple différent.',
+      };
+      const followUp = followUps[action.type];
+      if (followUp) sendMessage(followUp);
+
     } catch (e) {
       notify(`❌ Erreur : ${e.message}`);
     }
