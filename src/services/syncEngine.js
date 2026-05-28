@@ -27,9 +27,9 @@ const LOCAL_ONLY_STORES = new Set([
   'settings',
   'documentChunks', // large, rebuilt locally from documents
   'documentFiles',  // binary blobs — too large for JSON sync
-  'profile',
   'dailyLogs',
-  'conversations',  // session-specific chat history — kept local per device
+  // NOTE: 'profile' and 'conversations' ARE synced — users expect them
+  // on every device they log into.
 ]);
 
 /* ─── Status callbacks ───────────────────────────────────────────── */
@@ -54,11 +54,15 @@ function dispatchSync() {
 
 /* ─── Sanitize items before cloud upload ─────────────────────────── */
 /* Truncate very large text fields so rows stay within Supabase limits */
-const MAX_TEXT_BYTES = 80_000; // ~80 KB per document row
+const MAX_TEXT_BYTES = 80_000;   // ~80 KB per document row
+const MAX_MSG_COUNT  = 200;      // keep last N messages per conversation
 
 function sanitizeForSync(store, item) {
   if (store === 'documents' && item.text && item.text.length > MAX_TEXT_BYTES) {
     return { ...item, text: item.text.slice(0, MAX_TEXT_BYTES) };
+  }
+  if (store === 'conversations' && Array.isArray(item.messages) && item.messages.length > MAX_MSG_COUNT) {
+    return { ...item, messages: item.messages.slice(-MAX_MSG_COUNT) };
   }
   return item;
 }
@@ -258,6 +262,7 @@ class SyncEngine {
       'subjects','courses','assignments','exams','grades','pomodoro',
       'reminders','revisions','notes','journal','goals','checklist',
       'documents','flashcards','quizzes',
+      'profile','conversations',   // user profile + AI chat history
     ];
 
     _emit('syncing');

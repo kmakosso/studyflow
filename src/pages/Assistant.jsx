@@ -8,6 +8,7 @@ import {
 import { claude } from '../services/claudeService';
 import { useIntelligence } from '../contexts/IntelligenceContext';
 import { db } from '../services/db';
+import { useSyncRefresh } from '../hooks/useSyncRefresh';
 import ApiKeySetup from '../components/ApiKeySetup';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
@@ -374,6 +375,10 @@ export default function Assistant() {
     db.all('subjects').then(s => setSubjects(s.sort((a,b) => a.name.localeCompare(b.name))));
     loadConversations();
   }, []);
+
+  // Reload conversation list when cloud sync delivers new data
+  const loadConvsCallback = useCallback(() => { loadConversations(); }, []);
+  useSyncRefresh(loadConvsCallback);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior:'smooth' });

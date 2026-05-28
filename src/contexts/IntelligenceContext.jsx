@@ -5,6 +5,7 @@ import { getProfile, computeStudentScore } from '../services/studentProfile';
 import { predictRisks, detectDashboardMode } from '../services/predictor';
 import { getEnergyStatus }              from '../services/energyModel';
 import { db }                           from '../services/db';
+import { useSyncRefresh }               from '../hooks/useSyncRefresh';
 
 const IntelligenceContext = createContext(null);
 
@@ -64,6 +65,9 @@ export function IntelligenceProvider({ children }) {
     const id = setInterval(refresh, 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  // Refresh profile/intelligence when cloud sync delivers new data
+  useSyncRefresh(refresh);
 
   const topAlerts = [
     ...rules.filter(r => r.severity === 'critical'),
