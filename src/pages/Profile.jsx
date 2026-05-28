@@ -9,6 +9,7 @@ import { computeProfile, WORK_TIME_LABELS } from '../services/studentProfile';
 import { buildKnowledgeGraph, getMasteryColor, RISK_LABELS, TREND_ICONS } from '../services/knowledgeGraph';
 import { computeStreak }            from '../services/analytics';
 import { db }                       from '../services/db';
+import { useSyncRefresh }           from '../hooks/useSyncRefresh';
 import { format, subDays, getDay, startOfWeek, endOfWeek, isWithinInterval, differenceInDays } from 'date-fns';
 import { fr }                       from 'date-fns/locale';
 
@@ -149,29 +150,16 @@ function IdentityCard({ user, displayName, schoolLevel, onSave }) {
 }
 
 /* ─── Weekly goals ───────────────────────────────────────────────────── */
-function WeeklyGoals({ sessions, doneAssignments, reviewedCards }) {
-  const [goals,   setGoals]   = useState({ hours: 10, assignments: 5, cards: 20 });
+function WeeklyGoals({ sessions, doneAssignments, reviewedCards, goals, onSaveGoals }) {
   const [editing, setEditing] = useState(false);
   const [draft,   setDraft]   = useState(goals);
 
-  useEffect(() => {
-    Promise.all([
-      db.getSetting('wg_hours', 10),
-      db.getSetting('wg_assignments', 5),
-      db.getSetting('wg_cards', 20),
-    ]).then(([h, a, c]) => {
-      const g = { hours: h, assignments: a, cards: c };
-      setGoals(g); setDraft(g);
-    });
-  }, []);
+  // Keep draft in sync when goals change externally (cloud sync)
+  useEffect(() => { setDraft(goals); }, [goals]);
 
   const save = async () => {
-    await Promise.all([
-      db.setSetting('wg_hours',       draft.hours),
-      db.setSetting('wg_assignments',  draft.assignments),
-      db.setSetting('wg_cards',        draft.cards),
-    ]);
-    setGoals(draft); setEditing(false);
+    await onSaveGoals(draft);
+    setEditing(false);
   };
 
   const now      = new Date();
@@ -246,9 +234,9 @@ function WeeklyGoals({ sessions, doneAssignments, reviewedCards }) {
         </div>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          <GoalBar label="Heures de travail"   emoji="⏱️" current={currentHours}  target={goals.hours}       color="var(--primary)"/>
-          <GoalBar label="Devoirs complétés"   emoji="✅" current={currentAssign} target={goals.assignments} color="var(--success)"/>
-          <GoalBar label="Cartes révisées"     emoji="🃏" current={currentCards}  target={goals.cards}       color="var(--warning)"/>
+          <GoalBar label="Heures de travail"   emoji="⏱️" current={currentHours}  target={goals?.hours       ?? 10} color="var(--primary)"/>
+          <GoalBar label="Devoirs complétés"   emoji="✅" current={currentAssign} target={goals?.assignments ?? 5}  color="var(--success)"/>
+          <GoalBar label="Cartes révisées"     emoji="🃏" current={currentCards}  target={goals?.cards       ?? 20} color="var(--warning)"/>
         </div>
       )}
     </div>
@@ -425,6 +413,9 @@ export default function Profile() {
   const [displayName,  setDisplayName]  = useState('');
   const [schoolLevel,  setSchoolLevel]  = useState('');
 
+  // Weekly goals (lifted from WeeklyGoals sub-component so they sync)
+  const [wgPrefs, setWgPrefs] = useState({ hours: 10, assignments: 5, cards: 20 });
+
   // Extra data for badges + goals
   const [allSessions,   setAllSessions]   = useState([]);
   const [doneAssign,    setDoneAssign]    = useState(0);
@@ -438,18 +429,34 @@ export default function Profile() {
   const [weekCards, setWeekCards] = useState(0);
 
   const load = useCallback(async () => {
-    const [sessions, assignments, revisions, documents, name, level] = await Promise.all([
+    const [sessions, assignments, revisions, documents, userPrefs] = await Promise.all([
       db.all('pomodoro'),
       db.all('assignments'),
       db.all('revisions'),
       db.all('documents'),
-      db.getSetting('userDisplayName', ''),
-      db.getSetting('userSchoolLevel', ''),
+      db.get('profile', 'userPrefs').catch(() => null),
     ]);
 
+    // Migration: if no userPrefs in profile store yet, read from settings and migrate
+    let prefs = userPrefs;
+    if (!prefs) {
+      const [name, level, h, a, c] = await Promise.all([
+        db.getSetting('userDisplayName', ''),
+        db.getSetting('userSchoolLevel', ''),
+        db.getSetting('wg_hours', 10),
+        db.getSetting('wg_assignments', 5),
+        db.getSetting('wg_cards', 20),
+      ]);
+      prefs = { id: 'userPrefs', displayName: name, schoolLevel: level, wg_hours: h, wg_assignments: a, wg_cards: c };
+      // Persist to profile store so it syncs going forward
+      await db.put('profile', { ...prefs, updatedAt: new Date().toISOString() });
+    }
+
+    setDisplayName(prefs.displayName || '');
+    setSchoolLevel(prefs.schoolLevel || '');
+    setWgPrefs({ hours: prefs.wg_hours ?? 10, assignments: prefs.wg_assignments ?? 5, cards: prefs.wg_cards ?? 20 });
+
     setAllSessions(sessions);
-    setDisplayName(name);
-    setSchoolLevel(level);
 
     const now    = new Date();
     const wStart = startOfWeek(now, { weekStartsOn: 1 });
@@ -481,6 +488,7 @@ export default function Profile() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSyncRefresh(load);   // reload when cloud sync delivers new data
 
   useEffect(() => {
     buildKnowledgeGraph().then(g => { setGraph(g); setGraphLoading(false); });
@@ -499,10 +507,23 @@ export default function Profile() {
   };
 
   const saveIdentity = async (name, level) => {
-    await db.setSetting('userDisplayName', name);
-    await db.setSetting('userSchoolLevel', level);
+    const existing = await db.get('profile', 'userPrefs').catch(() => null) || { id: 'userPrefs' };
+    await db.put('profile', { ...existing, id: 'userPrefs', displayName: name, schoolLevel: level, updatedAt: new Date().toISOString() });
     setDisplayName(name);
     setSchoolLevel(level);
+  };
+
+  const saveGoals = async (newGoals) => {
+    const existing = await db.get('profile', 'userPrefs').catch(() => null) || { id: 'userPrefs' };
+    await db.put('profile', {
+      ...existing,
+      id: 'userPrefs',
+      wg_hours:       newGoals.hours,
+      wg_assignments: newGoals.assignments,
+      wg_cards:       newGoals.cards,
+      updatedAt: new Date().toISOString(),
+    });
+    setWgPrefs(newGoals);
   };
 
   const sc      = score;
@@ -576,6 +597,8 @@ export default function Profile() {
         sessions={allSessions}
         doneAssignments={window.__sfWeekAssign || 0}
         reviewedCards={weekCards}
+        goals={wgPrefs}
+        onSaveGoals={saveGoals}
       />
 
       {/* ── Activity heatmap ── */}
