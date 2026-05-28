@@ -421,6 +421,114 @@ export async function complete({ messages, system, maxTokens = 4096 }) {
   return result;
 }
 
+export async function completeGrok({ messages, system, model = 'grok-3', maxTokens = 4096 }) {
+  let result = '';
+  for await (const chunk of streamGrok({ messages, system, model, maxTokens })) {
+    result += chunk;
+  }
+  return result;
+}
+
+/* ─── AI Study Plan (Claude or Grok) ─────────────────────────────── */
+/* Generates a day-by-day JSON plan from real AI, not just an algorithm */
+
+export async function generateStudyPlanFromAI({
+  assignments, exams, subjects, slotConfig, days = 14,
+  provider = 'claude', grokModel = 'grok-3', onProgress,
+}) {
+  const today         = new Date().toISOString().split('T')[0];
+  const contextBlock  = await buildAcademicContext();
+
+  const slotDesc = (slots) => slots
+    .filter(s => s.enabled)
+    .map(s => `  • ${s.label} (${s.start}–${s.end}) : ${s.hours}h`)
+    .join('\n') || '  Aucun créneau';
+
+  const assignList = assignments
+    .filter(a => a.status !== 'done' && a.dueDate)
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+    .map(a => {
+      const s = subjects.find(s => s.id === a.subjectId);
+      return `- [${a.dueDate}] ${s?.name || '?'} : ${a.title} (~${a.estimatedHours || 1.5}h)`;
+    }).join('\n') || '  Aucun devoir en attente';
+
+  const examList = exams
+    .filter(e => new Date(e.date) >= new Date())
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(e => {
+      const s = subjects.find(s => s.id === e.subjectId);
+      return `- [${e.date}] Examen ${s?.name || '?'} : ${e.title} (importance: ${e.importance || 'medium'})`;
+    }).join('\n') || '  Aucun examen à venir';
+
+  const system = buildSystemPrompt(contextBlock);
+  const prompt = `Tu es un expert en planification académique. Génère un planning de travail détaillé pour les ${days} prochains jours à partir d'aujourd'hui (${today}).
+
+## Devoirs en attente
+${assignList}
+
+## Examens à venir
+${examList}
+
+## Créneaux disponibles
+Lundi–Vendredi :
+${slotDesc(slotConfig.weekday)}
+Samedi & Dimanche :
+${slotDesc(slotConfig.weekend)}
+
+## Instructions
+- Répartis intelligemment les devoirs selon leur date limite (urgence prioritaire)
+- Commence les révisions d'examen au moins 5 jours avant la date
+- Respecte les créneaux disponibles (ne planifie pas si aucun créneau n'est actif ce jour-là)
+- Pour chaque tâche, donne un conseil pratique court et un objectif clair
+- Ajoute un message de motivation court pour chaque jour
+
+## FORMAT STRICT — réponds UNIQUEMENT avec ce JSON, sans texte avant ou après :
+[
+  {
+    "date": "YYYY-MM-DD",
+    "slots": [
+      {
+        "id": "morning|afternoon|evening",
+        "tasks": [
+          { "title": "...", "subject": "...", "hours": 1.5, "objective": "...", "tip": "..." }
+        ]
+      }
+    ],
+    "dailyTip": "Message du jour court et motivant"
+  }
+]
+
+Génère uniquement les jours qui ont au moins une tâche. Maximum ${days} jours.`;
+
+  const messages = [{ role: 'user', content: prompt }];
+
+  let raw = '';
+  if (provider === 'grok') {
+    const apiKey = await getGrokApiKey();
+    if (!apiKey) throw new Error('NO_GROK_API_KEY');
+    // Stream Grok for progress feedback
+    for await (const chunk of streamGrok({ messages, system, model: grokModel, maxTokens: 6000 })) {
+      raw += chunk;
+      onProgress?.(raw.length);
+    }
+  } else {
+    const apiKey = await getApiKey();
+    if (!apiKey) throw new Error('NO_API_KEY');
+    for await (const chunk of streamMessage({ messages, system, maxTokens: 6000 })) {
+      raw += chunk;
+      onProgress?.(raw.length);
+    }
+  }
+
+  // Parse JSON
+  try {
+    const match = raw.match(/\[[\s\S]*\]/);
+    return match ? JSON.parse(match[0]) : [];
+  } catch {
+    return [];
+  }
+}
+
 /* ─── High-level chat with academic context ─────────────────────── */
 
 export async function chatWithContext(userMessages, extraContext = '') {
@@ -622,4 +730,5 @@ export const claude = {
   generateQuizFromText,
   buildAcademicContext,
   buildSystemPrompt,
+  generateStudyPlanFromAI,
 };
