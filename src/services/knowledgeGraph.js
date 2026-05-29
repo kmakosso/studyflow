@@ -20,7 +20,7 @@ export async function buildKnowledgeGraph() {
     let gradeTrend = 'stable';
 
     if (subjectGrades.length > 0) {
-      const pcts = subjectGrades.map(g => g.maxGrade ? (g.grade / g.maxGrade) * 100 : null).filter(Boolean);
+      const pcts = subjectGrades.map(g => g.maxScore ? (g.score / g.maxScore) * 100 : null).filter(Boolean);
       if (pcts.length > 0) {
         gradePct = Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length);
       }

@@ -263,7 +263,7 @@ class SyncEngine {
 
     // Every store except the local-only ones (settings, documentChunks, documentFiles)
     const stores = [
-      'subjects','courses','assignments','exams','grades','pomodoro',
+      'subjects','ues','courses','assignments','exams','grades','pomodoro',
       'reminders','revisions','notes','journal','goals','checklist',
       'documents','flashcards','quizzes',
       'profile','conversations',

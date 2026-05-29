@@ -6,6 +6,7 @@
 import { db }               from './db.js';
 import { differenceInDays, format, startOfWeek, endOfWeek } from 'date-fns';
 import { fr }               from 'date-fns/locale';
+import { subjectAverage }   from './gradeCalc.js';
 
 /* ── helpers ────────────────────────────────────────────────────────────── */
 const normalize = str =>
@@ -316,9 +317,8 @@ async function handleWeak(_, d) {
   const weak = p.weakSubjectIds.map(id => {
     const sub    = d.subjects.find(s => s.id === id);
     const grades = d.grades.filter(g => g.subjectId === id);
-    const avg    = grades.length > 0
-      ? Math.round(grades.reduce((acc, g) => acc + (g.grade / g.maxGrade) * 20, 0) / grades.length * 10) / 10
-      : null;
+    const sAvg   = subjectAverage(grades);
+    const avg    = sAvg !== null ? Math.round(sAvg * 10) / 10 : null;
     const dueCount  = d.assignments.filter(a => a.subjectId === id && a.status !== 'done').length;
     const cardCount = d.revisions.filter(r => r.subjectId === id && r.status !== 'mastered').length;
     return { sub, avg, dueCount, cardCount };
@@ -376,9 +376,8 @@ async function handleSubjectQuery(input, d) {
   const exams     = d.exams.filter(e => e.subjectId === subject.id && new Date(e.date) >= now);
   const grades    = d.grades.filter(g => g.subjectId === subject.id);
   const revisions = d.revisions.filter(r => r.subjectId === subject.id);
-  const avgGrade  = grades.length > 0
-    ? Math.round(grades.reduce((acc, g) => acc + (g.grade / g.maxGrade) * 20, 0) / grades.length * 10) / 10
-    : null;
+  const sAvg      = subjectAverage(grades);
+  const avgGrade  = sAvg !== null ? Math.round(sAvg * 10) / 10 : null;
 
   const items = [
     `📝 Devoirs en attente : ${pending.length}`,

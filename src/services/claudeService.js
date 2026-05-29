@@ -14,6 +14,7 @@
 
 import { db } from './db';
 import { buildRagContextCached } from './ragPipeline';
+import { subjectAverage } from './gradeCalc';
 
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const GROK_API_URL   = 'https://api.x.ai/v1/chat/completions';
@@ -82,11 +83,11 @@ export async function buildAcademicContext() {
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
     .slice(0, 5);
 
-  // Average per subject
+  // Grades grouped per subject (averaged later with proper coefficients)
   const gradesBySubject = {};
   for (const g of grades) {
     if (!gradesBySubject[g.subjectId]) gradesBySubject[g.subjectId] = [];
-    gradesBySubject[g.subjectId].push(g.value);
+    gradesBySubject[g.subjectId].push(g);
   }
 
   // Pomodoro this week
@@ -136,7 +137,8 @@ export async function buildAcademicContext() {
     '## Matières',
     ...subjects.map(s => {
       const gList  = gradesBySubject[s.id] || [];
-      const avg    = gList.length ? (gList.reduce((a, b) => a + b, 0) / gList.length).toFixed(1) : '—';
+      const sAvg   = subjectAverage(gList);
+      const avg    = sAvg !== null ? sAvg.toFixed(1) : '—';
       const docs   = docsBySubject[s.id] || [];
       return `- ${s.name} (coeff ${s.coefficient ?? 1}, moyenne : ${avg}/20${docs.length ? `, ${docs.length} document(s)` : ''})`;
     }),

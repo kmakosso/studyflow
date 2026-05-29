@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME    = 'studyflow_v1';
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 
 let _db = null;
 
@@ -74,6 +74,11 @@ export async function getDB() {
       if (oldVersion < 8) {
         ensure('conversations', ['updatedAt', 'subjectId']);
       }
+
+      // V9 additions — UE (Unités d'Enseignement) for grouping subjects
+      if (oldVersion < 9) {
+        ensure('ues', ['createdAt']);
+      }
     },
   });
   return _db;
@@ -124,14 +129,14 @@ export const db = {
 };
 
 export async function exportAll() {
-  const stores = ['subjects','courses','assignments','exams','grades','pomodoro','reminders','settings','revisions','profile','dailyLogs','weeklyGoals','notes','journal','goals','checklist','documents','flashcards','quizzes','documentChunks'];
-  const out    = { _version: 5, _date: new Date().toISOString() };
+  const stores = ['subjects','ues','courses','assignments','exams','grades','pomodoro','reminders','settings','revisions','profile','dailyLogs','weeklyGoals','notes','journal','goals','checklist','documents','flashcards','quizzes','documentChunks'];
+  const out    = { _version: 6, _date: new Date().toISOString() };
   for (const s of stores) out[s] = await db.all(s);
   return out;
 }
 
 export async function importAll(data) {
-  const stores = ['subjects','courses','assignments','exams','grades','pomodoro','reminders','settings','revisions','profile','dailyLogs','weeklyGoals','notes','journal','goals','checklist','documents','flashcards','quizzes','documentChunks'];
+  const stores = ['subjects','ues','courses','assignments','exams','grades','pomodoro','reminders','settings','revisions','profile','dailyLogs','weeklyGoals','notes','journal','goals','checklist','documents','flashcards','quizzes','documentChunks'];
   for (const s of stores) {
     if (!Array.isArray(data[s])) continue;
     await db.clear(s);

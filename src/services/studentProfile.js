@@ -1,5 +1,6 @@
 import { db } from './db.js';
 import { differenceInDays, getHours } from 'date-fns';
+import { subjectAverage, ueAverage, generalAverage } from './gradeCalc.js';
 
 const PROFILE_KEY = 'main';
 
@@ -13,11 +14,13 @@ export async function getProfile() {
 }
 
 export async function computeProfile() {
-  const [pomodoro, assignments, grades, revisions] = await Promise.all([
+  const [pomodoro, assignments, grades, revisions, subjects, ues] = await Promise.all([
     db.all('pomodoro'),
     db.all('assignments'),
     db.all('grades'),
     db.all('revisions'),
+    db.all('subjects'),
+    db.all('ues'),
   ]);
 
   const profile = {
@@ -91,24 +94,27 @@ export async function computeProfile() {
     }
   }
 
-  // === Grade analysis ===
+  // === Grade analysis (coefficient + UE weighted, LMD-aware) ===
   if (grades.length > 0) {
-    const bySubject = {};
-    grades.forEach(g => {
-      if (!g.subjectId || !g.grade || !g.maxGrade) return;
-      if (!bySubject[g.subjectId]) bySubject[g.subjectId] = [];
-      bySubject[g.subjectId].push((g.grade / g.maxGrade) * 20);
-    });
-    const subjectAvgs = Object.entries(bySubject).map(([id, scores]) => ({
-      id,
-      avg: scores.reduce((a, b) => a + b, 0) / scores.length,
-    }));
+    const gradesBySubject = (subjectId) => grades.filter(g => g.subjectId === subjectId);
+
+    // Per-subject weighted averages (by grade coefficient)
+    const subjectAvgs = subjects
+      .map(s => ({ id: s.id, avg: subjectAverage(gradesBySubject(s.id)) }))
+      .filter(s => s.avg !== null);
+
     profile.weakSubjectIds   = subjectAvgs.filter(s => s.avg < 10).map(s => s.id);
     profile.strongSubjectIds = subjectAvgs.filter(s => s.avg >= 15).map(s => s.id);
-    const allAvgs = subjectAvgs.map(s => s.avg);
-    if (allAvgs.length > 0) {
-      profile.avgGrade = Math.round((allAvgs.reduce((a, b) => a + b, 0) / allAvgs.length) * 10) / 10;
-    }
+
+    // General average: weighted by UE coefficient (matches Grades page)
+    const subjectsForUE = (ueId) => subjects.filter(s => (s.ueId || null) === ueId);
+    const orphans = subjects.filter(s => !s.ueId || !ues.some(u => u.id === s.ueId));
+    const groupAverages = [
+      ...ues.map(u => ({ ue: u, average: ueAverage(subjectsForUE(u.id), gradesBySubject).average })),
+      ...(orphans.length ? [{ ue: null, average: ueAverage(orphans, gradesBySubject).average }] : []),
+    ];
+    const { average } = generalAverage(groupAverages);
+    if (average !== null) profile.avgGrade = Math.round(average * 10) / 10;
   }
 
   // === Revision mastery ===

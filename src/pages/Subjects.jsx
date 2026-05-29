@@ -2,15 +2,18 @@ import { useState, useEffect } from 'react';
 import { Plus, Pencil, Trash2, BookOpen, FileText } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useSubjects, COLORS } from '../hooks/useSubjects';
+import { useUEs } from '../hooks/useUEs';
 import Modal from '../components/shared/Modal';
 import { db } from '../services/db';
 
 /* ─── Subject creation / edit form ──────────────────────────────── */
 
-function Form({ initial, onSubmit, onCancel }) {
+function Form({ initial, ues, onSubmit, onCancel }) {
   const [v, setV] = useState({
     name:        initial?.name        || '',
     color:       initial?.color       || COLORS[0],
+    coefficient: initial?.coefficient ?? 1,
+    ueId:        initial?.ueId        || '',
     teacher:     initial?.teacher     || '',
     room:        initial?.room        || '',
     description: initial?.description || '',
@@ -19,11 +22,28 @@ function Form({ initial, onSubmit, onCancel }) {
   const field = key => ({ value: v[key], onChange: e => setV(p => ({ ...p, [key]: e.target.value })) });
 
   return (
-    <form onSubmit={e => { e.preventDefault(); if (v.name.trim()) onSubmit(v); }}
+    <form onSubmit={e => {
+        e.preventDefault();
+        if (v.name.trim()) onSubmit({ ...v, coefficient: Number(v.coefficient) || 1, ueId: v.ueId || null });
+      }}
       style={{ display:'flex', flexDirection:'column', gap:14 }}>
       <div className="form-group">
         <label className="form-label">Nom *</label>
         <input {...field('name')} placeholder="ex : Mathématiques" required />
+      </div>
+
+      <div className="form-row">
+        <div className="form-group">
+          <label className="form-label">Coefficient</label>
+          <input type="number" min={0.5} step={0.5} {...field('coefficient')} placeholder="1" />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Unité d'Enseignement (UE)</label>
+          <select {...field('ueId')}>
+            <option value="">— Aucune (Hors UE) —</option>
+            {ues.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
       </div>
 
       <div className="form-group">
@@ -66,7 +86,7 @@ function Form({ initial, onSubmit, onCancel }) {
 
 /* ─── Subject card ───────────────────────────────────────────────── */
 
-function SubjectCard({ s, docCount, flashcardCount, onEdit, onDelete }) {
+function SubjectCard({ s, ue, docCount, flashcardCount, onEdit, onDelete }) {
   return (
     <div className="card card-hover" style={{ borderLeft:`4px solid ${s.color}`, display:'flex', flexDirection:'column', gap:0 }}>
       {/* Top row: color dot + name + actions */}
@@ -74,12 +94,21 @@ function SubjectCard({ s, docCount, flashcardCount, onEdit, onDelete }) {
         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
           <div style={{ width:12, height:12, borderRadius:'50%', backgroundColor:s.color, flexShrink:0 }}/>
           <div>
-            <span style={{ fontWeight:700, fontSize:15 }}>{s.name}</span>
-            {s.source === 'OCR' && (
+            <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap' }}>
+              <span style={{ fontWeight:700, fontSize:15 }}>{s.name}</span>
               <span style={{
-                marginLeft:8, fontSize:9.5, padding:'1px 5px', borderRadius:4, fontWeight:700,
-                backgroundColor:'#f59e0b22', color:'#f59e0b',
-              }}>OCR</span>
+                fontSize:10, padding:'1px 6px', borderRadius:12, fontWeight:700,
+                backgroundColor:'var(--border)', color:'var(--muted)',
+              }}>coef {s.coefficient ?? 1}</span>
+              {s.source === 'OCR' && (
+                <span style={{
+                  fontSize:9.5, padding:'1px 5px', borderRadius:4, fontWeight:700,
+                  backgroundColor:'#f59e0b22', color:'#f59e0b',
+                }}>OCR</span>
+              )}
+            </div>
+            {ue && (
+              <span style={{ fontSize:11, color:'var(--muted)' }}>📦 {ue.name}</span>
             )}
           </div>
         </div>
@@ -145,6 +174,7 @@ function SubjectCard({ s, docCount, flashcardCount, onEdit, onDelete }) {
 
 export default function Subjects() {
   const { subjects, loading, add, update, remove } = useSubjects();
+  const { ues, byId: ueById } = useUEs();
   const [open,    setOpen]    = useState(false);
   const [editing, setEditing] = useState(null);
 
@@ -202,6 +232,7 @@ export default function Subjects() {
             <SubjectCard
               key={s.id}
               s={s}
+              ue={s.ueId ? ueById(s.ueId) : null}
               docCount={docCounts[s.id] || 0}
               flashcardCount={flashcardCounts[s.id] || 0}
               onEdit={sub => { setEditing(sub); setOpen(true); }}
@@ -213,7 +244,7 @@ export default function Subjects() {
 
       <Modal isOpen={open} onClose={() => { setOpen(false); setEditing(null); }}
         title={editing ? 'Modifier la matière' : 'Nouvelle matière'}>
-        <Form initial={editing} onSubmit={save} onCancel={() => { setOpen(false); setEditing(null); }}/>
+        <Form initial={editing} ues={ues} onSubmit={save} onCancel={() => { setOpen(false); setEditing(null); }}/>
       </Modal>
     </div>
   );

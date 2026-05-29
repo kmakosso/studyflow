@@ -78,12 +78,13 @@ export async function computeStats() {
     ? futureExams.reduce((s, e) => s + differenceInDays(new Date(e.date), now), 0) / futureExams.length
     : null;
 
-  // Grade evolution — average per subject over time (sorted by date)
+  // Grade evolution — normalized score /20 per subject over time (sorted by date)
   const gradesBySubject = {};
   for (const g of grades) {
-    if (!g.subjectId || g.value == null) continue;
+    if (!g.subjectId || g.score == null) continue;
+    const norm = (g.score / (g.maxScore || 20)) * 20;
     if (!gradesBySubject[g.subjectId]) gradesBySubject[g.subjectId] = [];
-    gradesBySubject[g.subjectId].push({ date: g.date || g.createdAt || '', value: parseFloat(g.value) });
+    gradesBySubject[g.subjectId].push({ date: g.date || g.createdAt || '', value: Math.round(norm * 100) / 100 });
   }
   const gradeEvolution = subjects
     .filter(s => gradesBySubject[s.id]?.length > 0)
