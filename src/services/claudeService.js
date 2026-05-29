@@ -17,7 +17,7 @@ import { buildRagContextCached } from './ragPipeline';
 
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 const GROK_API_URL   = 'https://api.x.ai/v1/chat/completions';
-const DEFAULT_MODEL  = 'claude-opus-4-7';
+const DEFAULT_MODEL  = 'claude-opus-4-8';
 const ANTHROPIC_VER  = '2023-06-01';
 
 /* ─── Claude API key ─────────────────────────────────────────────── */

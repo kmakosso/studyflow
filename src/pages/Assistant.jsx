@@ -771,7 +771,7 @@ export default function Assistant() {
                 <p style={{ margin:0, fontSize:10.5, color:'var(--muted)' }}>
                   {provider === 'grok'
                     ? (hasGrok ? `✓ ${grokModel} · Accès complet` : 'Clé xAI requise')
-                    : (hasKey  ? '✓ claude-opus-4-7 · Accès complet' : 'Clé Anthropic requise')}
+                    : (hasKey  ? '✓ claude-opus-4-8 · Accès complet' : 'Clé Anthropic requise')}
                 </p>
               )}
             </div>
