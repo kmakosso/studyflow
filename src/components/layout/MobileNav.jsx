@@ -19,6 +19,7 @@ export default function MobileNav() {
       borderTop: '1px solid var(--border)',
       display: 'flex', alignItems: 'stretch',
       paddingBottom: 'env(safe-area-inset-bottom)',
+      width: '100%', maxWidth: '100%',
     }}>
       {TABS.map(({ to, icon: Icon, label }) => (
         <NavLink
@@ -26,20 +27,23 @@ export default function MobileNav() {
           to={to}
           end={to === '/'}
           style={({ isActive }) => ({
-            flex: 1,
+            flex: 1, minWidth: 0,                 /* parts égales, jamais de débordement */
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            gap: 3, padding: '9px 4px',
+            gap: 3, padding: '9px 2px',
             textDecoration: 'none',
             color: isActive ? 'var(--primary)' : 'var(--muted)',
-            fontWeight: isActive ? 700 : 500,
+            fontWeight: 600,                      /* poids FIXE → pas de tressautement */
             fontSize: 10.5,
+            lineHeight: 1,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            WebkitTapHighlightColor: 'transparent',
             transition: 'color 0.15s',
           })}
         >
           {({ isActive }) => (
             <>
-              <Icon size={20} strokeWidth={isActive ? 2.5 : 1.8} />
-              {label}
+              <Icon size={20} strokeWidth={isActive ? 2.4 : 1.8} />
+              <span style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
             </>
           )}
         </NavLink>

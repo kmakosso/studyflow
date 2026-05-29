@@ -42,6 +42,20 @@ html, body, #root {
   font-size: 14px;
 }
 
+/* ── Stabilité mobile : pas de glissement latéral ni de rebond ──── */
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;            /* coupe tout débordement horizontal */
+  overscroll-behavior: none;     /* stoppe l'effet rebond / pull-to-refresh */
+}
+body {
+  position: relative;
+  width: 100%;
+  -webkit-tap-highlight-color: transparent;  /* pas de flash bleu au tap */
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;            /* iOS ne rezoome pas le texte */
+}
+
 ::-webkit-scrollbar        { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track  { background: transparent; }
 ::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 4px; }
@@ -142,6 +156,14 @@ main > * { animation: fadeIn 0.18s ease-out; }
 
 /* ── Responsive — mobile (<768px) ──────────────────────────────── */
 @media (max-width: 767px) {
+  /* Rien ne doit dépasser la largeur de l'écran */
+  img, pre, code, video, canvas, svg, table {
+    max-width: 100%;
+  }
+  pre { overflow-x: auto; }
+  /* Mots/URLs très longs : on coupe au lieu d'élargir la page */
+  p, span, h1, h2, h3, a, li, div { overflow-wrap: anywhere; }
+
   /* Forms: single column */
   .form-row {
     grid-template-columns: 1fr !important;
