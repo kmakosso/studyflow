@@ -90,7 +90,7 @@ function findClosestSubject(name, subjects) {
 
 function fmtWeekRange(weekDates) {
   const s = weekDates[0].toLocaleDateString('fr-FR', { day:'numeric', month:'long' });
-  const e = weekDates[5].toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' });
+  const e = weekDates[6].toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' });
   return `${s} – ${e}`;
 }
 
@@ -107,7 +107,6 @@ function CourseForm({ initial, subjects, onSubmit, onCancel }) {
     startTime: initial?.startTime || '08:00',
     endTime:   initial?.endTime   || '10:00',
     room:      initial?.room      || '',
-    weekType:  initial?.weekType  || 'both',
     notes:     initial?.notes     || '',
   });
   const set = k => e => setV(p => ({ ...p, [k]: e.target.value }));
@@ -127,14 +126,6 @@ function CourseForm({ initial, subjects, onSubmit, onCancel }) {
           <label className="form-label">Jour récurrent</label>
           <select value={v.day} onChange={e => setV(p => ({ ...p, day: Number(e.target.value) }))}>
             {DAYS.map((d,i) => <option key={i} value={i}>{d}</option>)}
-          </select>
-        </div>
-        <div className="form-group">
-          <label className="form-label">Semaine (optionnel)</label>
-          <select value={v.weekType} onChange={set('weekType')}>
-            <option value="both">A et B</option>
-            <option value="A">Semaine A</option>
-            <option value="B">Semaine B</option>
           </select>
         </div>
       </div>
@@ -199,21 +190,25 @@ function WeekListView({ weekDates, forDateStr, byId, onEdit, onDelete }) {
                 }}>Libre</div>
               ) : courses.map(c => {
                 const sub = byId(c.subjectId);
+                const isStudy = c.type === 'study';
+                const col = sub?.color || 'var(--primary)';
                 return (
                   <div key={c.id} style={{
                     borderRadius:8, padding:'8px',
-                    backgroundColor:(sub?.color||'#7c6af7')+'18',
-                    borderLeft:`3px solid ${sub?.color||'var(--primary)'}`,
+                    backgroundColor: isStudy ? 'var(--surface)' : (sub?.color||'#7c6af7')+'18',
+                    border: isStudy ? `1px dashed ${col}` : 'none',
+                    borderLeft:`3px ${isStudy ? 'dashed' : 'solid'} ${col}`,
                     fontSize:11,
                   }}>
-                    <p style={{ fontWeight:700, marginBottom:2 }}>{sub?.name||'?'}</p>
+                    <p style={{ fontWeight:700, marginBottom:2 }}>
+                      {isStudy ? `📚 ${c.title || 'Étude'}` : (sub?.name||'?')}
+                    </p>
                     <p style={{ color:'var(--muted)', fontSize:10 }}>{c.startTime}–{c.endTime}</p>
-                    {c.room && <p style={{ color:'var(--muted)', fontSize:10 }}>📍 {c.room}</p>}
-                    {c.weekType && c.weekType!=='both' && (
-                      <span style={{ backgroundColor:'var(--border)', borderRadius:4, padding:'1px 4px', fontSize:10, display:'inline-block', marginTop:3 }}>
-                        Sem.{c.weekType}
+                    {isStudy ? (
+                      <span style={{ fontSize:9, color:'var(--primary)', fontWeight:700, backgroundColor:'var(--primary)15', borderRadius:4, padding:'1px 5px', display:'inline-block', marginTop:3 }}>
+                        Révision perso
                       </span>
-                    )}
+                    ) : (c.room && <p style={{ color:'var(--muted)', fontSize:10 }}>📍 {c.room}</p>)}
                     <div style={{ display:'flex', gap:4, marginTop:4 }}>
                       <button onClick={() => onEdit(c)}
                         style={{ background:'none', border:'none', color:'var(--muted)', padding:1, cursor:'pointer', display:'flex' }}>
@@ -255,7 +250,7 @@ function WeekTimeGrid({ weekDates, forDateStr, byId, onEdit }) {
       </div>
 
       {/* Day columns */}
-      <div style={{ flex:1, display:'grid', gridTemplateColumns:'repeat(6,1fr)', minWidth:480 }}>
+      <div style={{ flex:1, display:'grid', gridTemplateColumns:'repeat(7,1fr)', minWidth:560 }}>
         {weekDates.map((date, i) => {
           const dateStr = toDateStr(date);
           const courses = forDateStr(dateStr);
@@ -286,6 +281,8 @@ function WeekTimeGrid({ weekDates, forDateStr, byId, onEdit }) {
 
                 {courses.map(c => {
                   const sub    = byId(c.subjectId);
+                  const isStudy = c.type === 'study';
+                  const col     = sub?.color || '#7c6af7';
                   const top    = tToY(c.startTime);
                   const height = tToH(c.startTime, c.endTime);
                   if (top >= (GRID_END-GRID_START)*HOUR_H) return null;
@@ -293,17 +290,19 @@ function WeekTimeGrid({ weekDates, forDateStr, byId, onEdit }) {
                     <div key={c.id} onClick={() => onEdit(c)} style={{
                       position:'absolute', top:top+1, height:height-2,
                       left:2, right:2,
-                      backgroundColor:(sub?.color||'#7c6af7')+'28',
-                      borderLeft:`3px solid ${sub?.color||'#7c6af7'}`,
+                      backgroundColor: isStudy ? 'var(--surface)' : col+'28',
+                      border: isStudy ? `1px dashed ${col}` : 'none',
+                      borderLeft:`3px ${isStudy ? 'dashed' : 'solid'} ${col}`,
                       borderRadius:6, padding:'3px 5px',
                       overflow:'hidden', cursor:'pointer', fontSize:10.5,
                       transition:'opacity 0.1s',
                     }}>
-                      <p style={{ margin:0, fontWeight:700, color:sub?.color||'#7c6af7', lineHeight:1.2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                        {sub?.name||'?'}
+                      <p style={{ margin:0, fontWeight:700, color:col, lineHeight:1.2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        {isStudy ? `📚 ${c.title || 'Étude'}` : (sub?.name||'?')}
                       </p>
                       {height >= 34 && <p style={{ margin:0, color:'var(--muted)', fontSize:9.5 }}>{c.startTime}–{c.endTime}</p>}
-                      {c.room && height >= 48 && <p style={{ margin:0, color:'var(--muted)', fontSize:9.5 }}>📍 {c.room}</p>}
+                      {isStudy && height >= 48 && <p style={{ margin:0, color:'var(--primary)', fontSize:9, fontWeight:600 }}>Révision perso</p>}
+                      {!isStudy && c.room && height >= 48 && <p style={{ margin:0, color:'var(--muted)', fontSize:9.5 }}>📍 {c.room}</p>}
                     </div>
                   );
                 })}
@@ -921,20 +920,6 @@ export default function Schedule() {
             </button>
             <button onClick={() => navigate(1)} style={{ padding:'5px 9px', borderRadius:7, border:'1px solid var(--border)', background:'var(--card)', cursor:'pointer', fontSize:15 }}>›</button>
           </div>
-
-          {/* Semaine A/B (optionnel) */}
-          {view !== 'month' && (
-            <div style={{ display:'flex', gap:3 }}>
-              {['A','B'].map(t => (
-                <button key={t} onClick={() => setWeekType(t)} style={{
-                  padding:'5px 10px', borderRadius:7, fontSize:12, fontWeight:700,
-                  border:'1px solid var(--border)', cursor:'pointer',
-                  backgroundColor: weekType===t ? 'var(--primary)' : 'var(--card)',
-                  color: weekType===t ? 'white' : 'var(--muted)',
-                }}>Sem.{t}</button>
-              ))}
-            </div>
-          )}
 
           {/* OCR import */}
           <button onClick={() => setShowOcr(true)} style={{
