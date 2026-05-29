@@ -1,619 +1,449 @@
 import { useState, useMemo } from 'react';
-import { Wand2, Calendar, Clock, Zap, RefreshCw, User, Bot, Download, Loader, BookOpen } from 'lucide-react';
-import { format, parseISO, addDays, startOfDay } from 'date-fns';
+import {
+  Wand2, Calendar, Clock, CalendarPlus, Bell, Download, Loader,
+  BookOpen, Sparkles, AlertTriangle, Plus, X, Check,
+} from 'lucide-react';
+import { format, parseISO } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { generateAIPlan, rebalancePlan } from '../services/plannerAI';
-import { claude } from '../services/claudeService';
-import { useAssignments }  from '../hooks/useAssignments';
-import { useExams }        from '../hooks/useExams';
-import { useSubjects }     from '../hooks/useSubjects';
-import { useIntelligence } from '../contexts/IntelligenceContext';
+import { generateTimedPlan, exportPlanICS, timeToMin } from '../services/planScheduler';
+import { enrichPlanWithAI } from '../services/claudeService';
+import { useAssignments } from '../hooks/useAssignments';
+import { useExams }       from '../hooks/useExams';
+import { useSubjects }    from '../hooks/useSubjects';
+import { useReminders }   from '../hooks/useReminders';
 import { useSchedule, toDateStr } from '../hooks/useSchedule';
-import { SEVERITY_COLOR, SEVERITY_BG } from '../services/rulesEngine';
+import { useIsMobile }    from '../hooks/useIsMobile';
 import ApiKeySetup from '../components/ApiKeySetup';
 
-/* ─── Default slot config ─────────────────────────────────────────── */
-
-const DEFAULT_SLOTS = {
-  weekday: [
-    { id:'morning',   label:'Matin',      icon:'🌅', hours:2, start:'08h', end:'10h', enabled:true  },
-    { id:'afternoon', label:'Après-midi', icon:'☀️', hours:2, start:'14h', end:'16h', enabled:true  },
-    { id:'evening',   label:'Soir',       icon:'🌙', hours:2, start:'19h', end:'21h', enabled:false },
-  ],
-  weekend: [
-    { id:'morning',   label:'Matin',      icon:'🌅', hours:3, start:'09h', end:'12h', enabled:true  },
-    { id:'afternoon', label:'Après-midi', icon:'☀️', hours:3, start:'14h', end:'17h', enabled:true  },
-    { id:'evening',   label:'Soir',       icon:'🌙', hours:2, start:'19h', end:'21h', enabled:false },
-  ],
+/* ─── Defaults ───────────────────────────────────────────────────── */
+const DEFAULT_WINDOWS = {
+  weekday: { enabled: true,  ranges: [{ start: '17:00', end: '21:00' }] },
+  weekend: { enabled: true,  ranges: [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }] },
 };
 
-const SLOT_STARTS = { morning:'08:00', afternoon:'14:00', evening:'19:00' };
-
-/* ─── ICS export ──────────────────────────────────────────────────── */
-
-function toICSDate(dateStr, timeStr = '08:00') {
-  const [h, m] = timeStr.split(':').map(Number);
-  const d = new Date(dateStr + 'T00:00:00');
-  d.setHours(h, m, 0, 0);
-  return d.toISOString().replace(/[-:]/g, '').replace('.000', '');
-}
-
-function exportICS(plan, slotConfig, mode) {
-  const lines = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//StudyFlow//Planning IA//FR',
-    'CALSCALE:GREGORIAN',
-    'METHOD:PUBLISH',
-  ];
-
-  const normalizeDay = (day) => {
-    if (!day || !day.date) return null;
-    // AI mode vs algo mode
-    const tasks = day.slots
-      ? day.slots.flatMap(slot =>
-          (slot.tasks || []).map(t => ({
-            ...t,
-            slotId: slot.id,
-            hours:  t.hours || 1,
-            subject: t.subject || '',
-            title:  t.title || 'Tâche',
-          }))
-        )
-      : (day.tasks || []).map(t => ({
-          ...t,
-          slotId: t.slot?.id || 'morning',
-          hours:  t.allocHours || 1,
-          subject: t.subject || '',
-          title:  t.title || 'Tâche',
-        }));
-    return { date: day.date, tasks };
-  };
-
-  for (const rawDay of plan) {
-    const day = normalizeDay(rawDay);
-    if (!day) continue;
-    let cursor = { morning: SLOT_STARTS.morning, afternoon: SLOT_STARTS.afternoon, evening: SLOT_STARTS.evening };
-
-    for (const task of day.tasks) {
-      const slotId  = task.slotId || 'morning';
-      const start   = cursor[slotId] || SLOT_STARTS.morning;
-      const [sh, sm] = start.split(':').map(Number);
-      const endMin  = sh * 60 + sm + Math.round((task.hours || 1) * 60);
-      const endH    = String(Math.floor(endMin / 60)).padStart(2, '0');
-      const endM    = String(endMin % 60).padStart(2, '0');
-      const endTime = `${endH}:${endM}`;
-      cursor[slotId] = endTime;
-
-      const dtStart = toICSDate(day.date, start);
-      const dtEnd   = toICSDate(day.date, endTime);
-      const summary = task.subject ? `${task.subject} — ${task.title}` : task.title;
-      const desc    = task.objective || task.tip || '';
-
-      lines.push(
-        'BEGIN:VEVENT',
-        `DTSTART:${dtStart}`,
-        `DTEND:${dtEnd}`,
-        `SUMMARY:${summary}`,
-        ...(desc ? [`DESCRIPTION:${desc.replace(/,/g, '\\,').replace(/\n/g, '\\n')}`] : []),
-        `UID:${crypto.randomUUID()}@studyflow`,
-        'END:VEVENT',
-      );
-    }
-  }
-
-  lines.push('END:VCALENDAR');
-  const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = 'studyflow-planning.ics';
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-/* ─── SlotPicker ──────────────────────────────────────────────────── */
-
-function SlotPicker({ label, slots, onChange }) {
-  const total = slots.filter(s => s.enabled).reduce((a, s) => a + s.hours, 0);
+/* ─── Time-range editor ──────────────────────────────────────────── */
+function WindowEditor({ label, emoji, win, onToggle, onRange, onAdd, onRemove }) {
   return (
-    <div>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
-        <span style={{ fontSize:13, fontWeight:600 }}>{label}</span>
-        <span style={{ fontSize:12, color:'var(--primary)', fontWeight:600 }}>
-          {total > 0 ? `${total}h disponibles` : 'Aucun créneau'}
-        </span>
+    <div style={{ opacity: win.enabled ? 1 : 0.55 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <button onClick={onToggle} style={{
+          width: 40, height: 22, borderRadius: 11, border: 'none', cursor: 'pointer', position: 'relative',
+          background: win.enabled ? 'var(--primary)' : 'var(--border)', transition: 'background 0.15s',
+        }}>
+          <span style={{
+            position: 'absolute', top: 2, left: win.enabled ? 20 : 2,
+            width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.15s',
+          }} />
+        </button>
+        <span style={{ fontSize: 13.5, fontWeight: 700 }}>{emoji} {label}</span>
       </div>
-      <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-        {slots.map(slot => (
-          <div key={slot.id}
-            onClick={() => onChange(slot.id, 'enabled', !slot.enabled)}
-            style={{
-              display:'flex', flexDirection:'column', alignItems:'center', gap:6,
-              padding:'12px 14px', borderRadius:12, cursor:'pointer', minWidth:106,
-              border:`2px solid ${slot.enabled ? 'var(--primary)' : 'var(--border)'}`,
-              backgroundColor: slot.enabled ? 'var(--primary)10' : 'var(--card)',
-              boxShadow: slot.enabled ? '0 2px 8px var(--primary)22' : 'none',
-              transition:'all 0.15s',
-            }}
-          >
-            <span style={{ fontSize:22 }}>{slot.icon}</span>
-            <div style={{ textAlign:'center' }}>
-              <p style={{ margin:0, fontSize:12.5, fontWeight:700, color: slot.enabled ? 'var(--primary)' : 'var(--muted)' }}>
-                {slot.label}
-              </p>
-              <p style={{ margin:'2px 0 0', fontSize:11, color:'var(--muted)' }}>{slot.start}–{slot.end}</p>
+
+      {win.enabled && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 4 }}>
+          {win.ranges.map((r, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input type="time" value={r.start} onChange={e => onRange(i, 'start', e.target.value)}
+                style={{ width: 110, fontSize: 13 }} />
+              <span style={{ color: 'var(--muted)', fontSize: 13 }}>→</span>
+              <input type="time" value={r.end} onChange={e => onRange(i, 'end', e.target.value)}
+                style={{ width: 110, fontSize: 13 }} />
+              {win.ranges.length > 1 && (
+                <button onClick={() => onRemove(i)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', display: 'flex', padding: 4 }}>
+                  <X size={14} />
+                </button>
+              )}
             </div>
-            <div style={{ display:'flex', alignItems:'center', gap:4 }} onClick={e => e.stopPropagation()}>
-              <input
-                type="number" min={0.5} max={6} step={0.5} value={slot.hours}
-                disabled={!slot.enabled}
-                onChange={e => onChange(slot.id, 'hours', Math.max(0.5, Math.min(6, +e.target.value)))}
-                style={{
-                  width:40, textAlign:'center', fontSize:12, fontWeight:700,
-                  border:`1px solid ${slot.enabled ? 'var(--primary)44' : 'var(--border)'}`,
-                  borderRadius:6, padding:'2px 4px',
-                  background: slot.enabled ? 'var(--surface)' : 'var(--card)',
-                  color: slot.enabled ? 'var(--text)' : 'var(--muted)',
-                }}
-              />
-              <span style={{ fontSize:11, color:'var(--muted)' }}>h</span>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+          <button onClick={onAdd} style={{
+            display: 'flex', alignItems: 'center', gap: 5, alignSelf: 'flex-start',
+            background: 'none', border: '1px dashed var(--border)', borderRadius: 8,
+            color: 'var(--muted)', fontSize: 12, padding: '5px 10px', cursor: 'pointer',
+          }}>
+            <Plus size={12} /> Ajouter un créneau
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-/* ─── Day card (shared by algo + AI mode) ────────────────────────── */
+/* ─── Day card with merged timeline ──────────────────────────────── */
+function DayCard({ day, addedSet, remindedSet, onAddSchedule, onAddReminder }) {
+  // Merge courses + study blocks, sorted by time
+  const items = [
+    ...day.courses.map(c => ({
+      kind: 'course', start: c.startTime, end: c.endTime,
+      title: c.subjectName || 'Cours', room: c.room,
+    })),
+    ...day.blocks.map(b => ({ kind: 'study', ...b, start: b.startTime, end: b.endTime })),
+  ].sort((a, b) => timeToMin(a.start) - timeToMin(b.start));
 
-function DayCard({ day, isAIMode }) {
-  // Normalise tasks+slots for display
-  const slotGroups = isAIMode
-    ? (day.slots || []).map(slot => ({
-        slot: { ...slot, icon: DEFAULT_SLOTS.weekday.find(s => s.id === slot.id)?.icon || '📌' },
-        tasks: slot.tasks || [],
-      })).filter(g => g.tasks.length > 0)
-    : (() => {
-        const bySlot = {};
-        for (const t of day.tasks || []) {
-          const k = t.slot?.id || 'none';
-          if (!bySlot[k]) bySlot[k] = { slot: t.slot, tasks: [] };
-          bySlot[k].tasks.push(t);
-        }
-        return Object.values(bySlot);
-      })();
-
-  const isWeekendDay = day.isWeekend ?? false;
-  const totalH    = isAIMode
-    ? (day.slots || []).flatMap(s => s.tasks || []).reduce((a, t) => a + (t.hours || 0), 0)
-    : day.totalHours || 0;
-  const dayCourses   = day.courses || [];
-  const courseH      = day.courseHours || 0;
+  const studyH = Math.round(day.studyMinutes / 6) / 10;
 
   return (
-    <div className="card" style={{
-      borderLeft:`3px solid ${isWeekendDay ? '#10b981' : 'var(--primary)'}`,
-      padding:'16px 18px',
-    }}>
-      {/* Header */}
-      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
-        <Calendar size={14} color={isWeekendDay ? '#10b981' : 'var(--primary)'}/>
-        <span style={{ fontWeight:700, fontSize:15, textTransform:'capitalize', flex:1 }}>
-          {format(parseISO(day.date), 'EEEE d MMMM', { locale:fr })}
-          {isWeekendDay && <span style={{ fontSize:11, marginLeft:8, color:'#10b981', fontWeight:600 }}>Weekend</span>}
+    <div className="card" style={{ borderLeft: `3px solid ${day.isWeekend ? '#10b981' : 'var(--primary)'}`, padding: '14px 16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <Calendar size={14} color={day.isWeekend ? '#10b981' : 'var(--primary)'} />
+        <span style={{ fontWeight: 700, fontSize: 15, textTransform: 'capitalize', flex: 1 }}>
+          {format(parseISO(day.date), 'EEEE d MMMM', { locale: fr })}
+          {day.isWeekend && <span style={{ fontSize: 11, marginLeft: 8, color: '#10b981', fontWeight: 600 }}>Week-end</span>}
         </span>
-        <span style={{ display:'flex', alignItems:'center', gap:4, fontSize:12, color:'var(--muted)' }}>
-          <Clock size={11}/> {totalH.toFixed(1)}h étude
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--muted)' }}>
+          <Clock size={11} /> {studyH}h
         </span>
       </div>
 
-      {/* Courses already scheduled (read from timetable) */}
-      {dayCourses.length > 0 && (
-        <div style={{
-          marginBottom:10, padding:'7px 12px', borderRadius:8,
-          backgroundColor:'#10b98112', border:'1px solid #10b98133',
-          display:'flex', flexWrap:'wrap', gap:6,
-        }}>
-          <span style={{ fontSize:11.5, fontWeight:700, color:'#10b981', marginRight:2 }}>
-            🏫 Cours ({courseH.toFixed(1)}h) :
-          </span>
-          {dayCourses.map((c, i) => (
-            <span key={i} style={{ fontSize:11, color:'#059669', backgroundColor:'#10b98120', borderRadius:4, padding:'1px 7px' }}>
-              {c.startTime}–{c.endTime} {c.subjectName || ''}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Daily tip (AI mode) */}
-      {isAIMode && day.dailyTip && (
-        <div style={{
-          marginBottom:10, padding:'7px 12px', borderRadius:8,
-          backgroundColor:'var(--primary)10', border:'1px solid var(--primary)22',
-          fontSize:12.5, color:'var(--primary)', fontStyle:'italic',
-        }}>
+      {day.dailyTip && (
+        <div style={{ marginBottom: 10, padding: '7px 12px', borderRadius: 8, backgroundColor: 'var(--primary)10', border: '1px solid var(--primary)22', fontSize: 12.5, color: 'var(--primary)', fontStyle: 'italic' }}>
           💡 {day.dailyTip}
         </div>
       )}
 
-      {/* Slots + tasks */}
-      {slotGroups.map(({ slot, tasks }, gi) => (
-        <div key={gi} style={{ marginBottom:8 }}>
-          {slot && (
-            <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
-              <span style={{ fontSize:13 }}>{slot.icon || slot.id}</span>
-              <span style={{ fontSize:12, fontWeight:700, color:'var(--muted)' }}>{slot.label || slot.id}</span>
-              {slot.start && slot.end && (
-                <span style={{ fontSize:11, color:'var(--muted)' }}>{slot.start}–{slot.end}</span>
-              )}
-              <div style={{ flex:1, height:1, backgroundColor:'var(--border)', marginLeft:4 }}/>
-            </div>
-          )}
-          <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
-            {tasks.map((t, ti) => {
-              const color = t.color || 'var(--primary)';
-              const hours = isAIMode ? (t.hours || 1) : (t.allocHours || 1);
-              return (
-                <div key={ti} style={{
-                  padding:'9px 12px', borderRadius:8,
-                  backgroundColor: isAIMode ? 'var(--card)' : color + '15',
-                  border:`1px solid ${isAIMode ? 'var(--border)' : color + '33'}`,
-                  borderLeft:`3px solid ${isAIMode ? 'var(--primary)' : color}`,
-                }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom: (t.objective || t.tip) ? 4 : 0 }}>
-                    <span style={{ fontSize:11 }}>{t.type === 'exam_revision' ? '📚' : isAIMode ? '📝' : '📝'}</span>
-                    <span style={{ flex:1, fontSize:13, fontWeight:600 }}>{t.title}</span>
-                    {t.subject && <span style={{ fontSize:12, color:'var(--primary)', fontWeight:600 }}>{t.subject}</span>}
-                    <span style={{ fontSize:12, color:'var(--muted)', fontWeight:700, flexShrink:0 }}>{hours}h</span>
-                  </div>
-                  {(t.objective || t.tip) && (
-                    <p style={{ margin:0, fontSize:11.5, color:'var(--muted)', paddingLeft:20, lineHeight:1.4 }}>
-                      {t.objective ? `🎯 ${t.objective}` : `💡 ${t.tip}`}
-                    </p>
-                  )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {items.map((it, idx) => {
+          if (it.kind === 'course') {
+            return (
+              <div key={`c-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', borderRadius: 8, backgroundColor: '#10b98112', border: '1px solid #10b98126' }}>
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: '#10b981', fontFamily: 'monospace', minWidth: 86 }}>
+                  {it.start}–{it.end}
+                </span>
+                <span style={{ fontSize: 13, color: '#059669', flex: 1 }}>🏫 {it.title}{it.room ? ` · ${it.room}` : ''}</span>
+              </div>
+            );
+          }
+          const added    = addedSet.has(it.id);
+          const reminded = remindedSet.has(it.id);
+          return (
+            <div key={it.id} style={{
+              padding: '9px 12px', borderRadius: 8,
+              backgroundColor: it.color + '12', border: `1px solid ${it.color}30`, borderLeft: `3px solid ${it.color}`,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace', minWidth: 86 }}>
+                  {it.start}–{it.end}
+                </span>
+                <span style={{ fontSize: 11 }}>{it.type === 'revision' ? '📚' : '📝'}</span>
+                <span style={{ flex: 1, fontSize: 13, fontWeight: 600, minWidth: 100 }}>{it.title}</span>
+                {it.subject && <span style={{ fontSize: 12, color: it.color, fontWeight: 600 }}>{it.subject}</span>}
+                {it.overdue && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--danger)', backgroundColor: 'var(--danger)18', padding: '1px 6px', borderRadius: 10 }}>en retard</span>}
+
+                {/* Per-block actions */}
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button onClick={() => onAddSchedule(it)} disabled={added}
+                    title="Ajouter à l'emploi du temps"
+                    style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '3px 8px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: added ? 'default' : 'pointer',
+                      border: `1px solid ${added ? 'var(--success)' : 'var(--border)'}`,
+                      background: added ? 'var(--success)18' : 'none',
+                      color: added ? 'var(--success)' : 'var(--muted)' }}>
+                    {added ? <><Check size={11} /> Ajouté</> : <><CalendarPlus size={11} /> EDT</>}
+                  </button>
+                  <button onClick={() => onAddReminder(it)} disabled={reminded}
+                    title="Créer un rappel"
+                    style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '3px 8px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: reminded ? 'default' : 'pointer',
+                      border: `1px solid ${reminded ? 'var(--warning)' : 'var(--border)'}`,
+                      background: reminded ? 'var(--warning)18' : 'none',
+                      color: reminded ? 'var(--warning)' : 'var(--muted)' }}>
+                    {reminded ? <><Check size={11} /> Rappel</> : <><Bell size={11} /> Rappel</>}
+                  </button>
                 </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+              </div>
+              {(it.objective || it.tip) && (
+                <p style={{ margin: '4px 0 0', fontSize: 11.5, color: 'var(--muted)', paddingLeft: 20, lineHeight: 1.4 }}>
+                  {it.objective ? `🎯 ${it.objective}` : `💡 ${it.tip}`}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-/* ─── Main component ──────────────────────────────────────────────── */
-
+/* ─── Main component ─────────────────────────────────────────────── */
 export default function Planner() {
-  const { assignments }            = useAssignments();
-  const { exams }                  = useExams();
-  const { subjects }               = useSubjects();
-  const { profile }                = useIntelligence();
-  const { forDateStr, weekType }   = useSchedule();
+  const { assignments } = useAssignments();
+  const { exams }       = useExams();
+  const { subjects }    = useSubjects();
+  const { add: addCourse, forDateStr, weekType } = useSchedule();
+  const { add: addReminder } = useReminders();
+  const isMobile = useIsMobile();
 
-  const [slotConfig,  setSlotConfig]  = useState(DEFAULT_SLOTS);
-  const [days,        setDays]        = useState(14);
-  const [aiMode,      setAiMode]      = useState('algo');   // 'algo' | 'claude' | 'grok'
-  const [grokModel,   setGrokModel]   = useState('grok-3');
-  const [result,      setResult]      = useState(null);
-  const [aiPlan,      setAiPlan]      = useState(null);     // raw AI JSON plan
-  const [generating,  setGenerating]  = useState(false);
-  const [progress,    setProgress]    = useState(0);
-  const [error,       setError]       = useState('');
-  const [showSetup,   setShowSetup]   = useState(false);
+  const [windows,    setWindows]    = useState(DEFAULT_WINDOWS);
+  const [sessionLen, setSessionLen] = useState(60);
+  const [horizon,    setHorizon]    = useState(14);
+  const [plan,       setPlan]       = useState(null);
+  const [aiProvider, setAiProvider] = useState('claude');
+  const [grokModel,  setGrokModel]  = useState('grok-3');
+  const [enriching,  setEnriching]  = useState(false);
+  const [progress,   setProgress]   = useState(0);
+  const [error,      setError]      = useState('');
+  const [showSetup,  setShowSetup]  = useState(false);
   const [notification, setNotification] = useState('');
+  const [added,    setAdded]    = useState(new Set());
+  const [reminded, setReminded] = useState(new Set());
 
-  // Build a map "YYYY-MM-DD" → courses[] for the planning horizon
-  // Uses forDateStr from useSchedule so it respects weekType (A/B) and recurring courses
+  /* Timetable per day */
   const busyPerDay = useMemo(() => {
-    const busy  = {};
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    for (let i = 0; i < days; i++) {
-      const d       = new Date(today);
-      d.setDate(today.getDate() + i);
+    const busy = {};
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    for (let i = 0; i < horizon; i++) {
+      const d = new Date(today); d.setDate(today.getDate() + i);
       const dateStr = toDateStr(d);
       busy[dateStr] = forDateStr(dateStr, weekType).map(c => ({
-        ...c,
-        subjectName: subjects.find(s => s.id === c.subjectId)?.name || '',
+        ...c, subjectName: subjects.find(s => s.id === c.subjectId)?.name || '',
       }));
     }
     return busy;
-  }, [days, forDateStr, weekType, subjects]);
+  }, [horizon, forDateStr, weekType, subjects]);
 
-  // Count of days that have at least one course in the horizon
-  const busyDayCount      = Object.values(busyPerDay).filter(cs => cs.length > 0).length;
-  const totalCourseSlots  = Object.values(busyPerDay).flat().length;
+  const busyDayCount = Object.values(busyPerDay).filter(cs => cs.length > 0).length;
+  const pendingCount = assignments.filter(a => a.status !== 'done').length;
+  const examCount    = exams.filter(e => new Date(e.date) >= new Date()).length;
 
-  const mutateSlot = (type, id, key, value) => {
-    setSlotConfig(prev => ({
-      ...prev,
-      [type]: prev[type].map(s => s.id === id ? { ...s, [key]: value } : s),
-    }));
-    setResult(null); setAiPlan(null);
-  };
+  const notify = (msg) => { setNotification(msg); setTimeout(() => setNotification(''), 3500); };
 
-  const weekdayHours = slotConfig.weekday.filter(s => s.enabled).reduce((a, s) => a + s.hours, 0);
-  const weekendHours = slotConfig.weekend.filter(s => s.enabled).reduce((a, s) => a + s.hours, 0);
-  const avgHoursDay  = Math.round(((5 * weekdayHours + 2 * weekendHours) / 7) * 10) / 10;
+  /* Window mutators */
+  const toggleWin = (type) => { setWindows(p => ({ ...p, [type]: { ...p[type], enabled: !p[type].enabled } })); setPlan(null); };
+  const setRange  = (type, i, k, v) => setWindows(p => ({ ...p, [type]: { ...p[type], ranges: p[type].ranges.map((r, j) => j === i ? { ...r, [k]: v } : r) } }));
+  const addRange  = (type) => setWindows(p => ({ ...p, [type]: { ...p[type], ranges: [...p[type].ranges, { start: '14:00', end: '16:00' }] } }));
+  const removeRange = (type, i) => setWindows(p => ({ ...p, [type]: { ...p[type], ranges: p[type].ranges.filter((_, j) => j !== i) } }));
 
-  const notify = (msg) => { setNotification(msg); setTimeout(() => setNotification(''), 4000); };
-
-  /* ── Algo generate ── */
-  const runAlgo = () => {
-    setError('');
+  /* Generate (algo) */
+  const generate = () => {
+    setError(''); setAdded(new Set()); setReminded(new Set());
     const pending = assignments.filter(a => a.status !== 'done');
-    const futureExams = exams.filter(e => new Date(e.date) >= new Date()).map(e => ({
-      ...e,
-      importanceHours: e.importance === 'high' ? 4 : e.importance === 'medium' ? 2.5 : 1.5,
-    }));
-    // Pass busyPerDay so the algo subtracts class hours from each day's capacity
-    const r = generateAIPlan(pending, futureExams, { days }, subjects, profile, slotConfig, busyPerDay);
-    setResult(r); setAiPlan(null);
+    const futureExams = exams.filter(e => new Date(e.date) >= new Date());
+    const result = generateTimedPlan(pending, futureExams, subjects, { windows, sessionLen, horizon }, busyPerDay);
+    setPlan(result);
+    if (result.stats.blocks === 0) notify('🎉 Rien à planifier — tu es à jour !');
   };
 
-  /* ── AI generate (Claude or Grok) ── */
-  const runAI = async () => {
-    setError(''); setProgress(0); setGenerating(true); setResult(null); setAiPlan(null);
+  /* Improve with AI */
+  const improveWithAI = async () => {
+    if (!plan) return;
+    setError(''); setProgress(0); setEnriching(true);
     try {
-      const plan = await claude.generateStudyPlanFromAI({
-        assignments: assignments.filter(a => a.status !== 'done'),
-        exams:       exams.filter(e => new Date(e.date) >= new Date()),
-        subjects,
-        slotConfig,
-        days,
-        provider:   aiMode,
-        grokModel,
-        busyPerDay,   // ← inject timetable into the AI prompt
-        onProgress: (chars) => setProgress(Math.min(95, Math.round(chars / 50))),
+      const enriched = await enrichPlanWithAI(plan.days, {
+        provider: aiProvider, grokModel,
+        onProgress: (chars) => setProgress(Math.min(95, Math.round(chars / 40))),
       });
-      if (!plan || plan.length === 0) {
-        setError("L'IA n'a pas pu générer de planning. Vérifie ta clé API et réessaie.");
-      } else {
-        // Enrich AI plan with isWeekend flag + course info from timetable
-        const enriched = plan.map(day => ({
-          ...day,
-          isWeekend: [0, 6].includes(new Date(day.date + 'T12:00:00').getDay()),
-          courses:   busyPerDay[day.date] || [],   // attach real courses for display
-        }));
-        setAiPlan(enriched);
-      }
+      setPlan(p => ({ ...p, days: enriched }));
+      notify('✨ Planning enrichi par l\'IA !');
     } catch (e) {
-      const msg = e.message === 'NO_API_KEY'      ? 'Clé Claude manquante — configure ta clé API.'
-               : e.message === 'NO_GROK_API_KEY'  ? 'Clé Grok manquante — configure ta clé xAI.'
-               : e.message === 'INVALID_API_KEY'   ? 'Clé Claude invalide.'
-               : e.message === 'INVALID_GROK_KEY'  ? 'Clé Grok invalide.'
+      const msg = e.message === 'NO_API_KEY'     ? 'Clé Claude manquante — configure ta clé API.'
+               : e.message === 'NO_GROK_API_KEY' ? 'Clé Grok manquante — configure ta clé xAI.'
+               : e.message === 'INVALID_API_KEY' ? 'Clé Claude invalide.'
                : `Erreur : ${e.message}`;
       setError(msg);
-    } finally {
-      setGenerating(false); setProgress(0);
+    } finally { setEnriching(false); setProgress(0); }
+  };
+
+  /* Per-block actions */
+  const onAddSchedule = async (block) => {
+    await addCourse({
+      date: block.date, startTime: block.startTime, endTime: block.endTime,
+      subjectId: block.subjectId || null, room: '', title: block.title, type: 'study',
+    });
+    setAdded(s => new Set(s).add(block.id));
+    notify('✅ Ajouté à l\'emploi du temps');
+  };
+  const onAddReminder = async (block) => {
+    await addReminder({
+      datetime: new Date(`${block.date}T${block.startTime}:00`).toISOString(),
+      message: `${block.subject ? block.subject + ' — ' : ''}${block.title}`,
+    });
+    setReminded(s => new Set(s).add(block.id));
+    notify('🔔 Rappel créé');
+  };
+
+  /* Bulk actions */
+  const allBlocks = plan ? plan.days.flatMap(d => d.blocks) : [];
+  const addAllSchedule = async () => {
+    for (const b of allBlocks) if (!added.has(b.id)) await onAddScheduleSilent(b);
+    notify(`✅ ${allBlocks.length} blocs ajoutés à l'emploi du temps`);
+  };
+  const onAddScheduleSilent = async (block) => {
+    await addCourse({ date: block.date, startTime: block.startTime, endTime: block.endTime, subjectId: block.subjectId || null, room: '', title: block.title, type: 'study' });
+    setAdded(s => new Set(s).add(block.id));
+  };
+  const addAllReminders = async () => {
+    for (const b of allBlocks) if (!reminded.has(b.id)) {
+      await addReminder({ datetime: new Date(`${b.date}T${b.startTime}:00`).toISOString(), message: `${b.subject ? b.subject + ' — ' : ''}${b.title}` });
+      setReminded(s => new Set(s).add(b.id));
     }
+    notify(`🔔 ${allBlocks.length} rappels créés`);
   };
 
-  const handleGenerate = () => {
-    if (aiMode === 'algo') runAlgo();
-    else runAI();
-  };
-
-  const handleRebalance = () => {
-    if (!result) return;
-    const rebalanced = rebalancePlan(result.days, avgHoursDay);
-    setResult(prev => ({ ...prev, days: rebalanced }));
-  };
-
-  const currentPlan     = aiPlan || result?.days;
-  const isAIMode        = !!aiPlan;
-  const nonEmpty        = currentPlan?.filter(d => {
-    if (isAIMode) return (d.slots || []).some(s => s.tasks?.length > 0);
-    return (d.tasks || []).length > 0;
-  }) || [];
-  const overloadCount   = result?.days?.filter(d => d.overloaded).length || 0;
+  const activeDays = plan ? plan.days.filter(d => d.blocks.length > 0) : [];
 
   return (
-    <div style={{ maxWidth:900 }}>
-      <h1 className="page-title" style={{ marginBottom:4 }}>Planning automatique</h1>
-      <p style={{ color:'var(--muted)', fontSize:13, marginBottom:22 }}>
-        Génère un planning optimisé selon tes devoirs, examens et créneaux disponibles.
+    <div style={{ maxWidth: 880 }}>
+      <h1 className="page-title" style={{ marginBottom: 4 }}>Planning automatique</h1>
+      <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 20 }}>
+        Génère un agenda d'étude placé à des heures précises, autour de tes cours.
       </p>
 
-      {/* ── Config card ── */}
-      <div className="card" style={{ marginBottom:20 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:18 }}>
-          <p style={{ fontWeight:700, fontSize:14.5, margin:0 }}>Mes créneaux disponibles</p>
-          {profile && (
-            <span style={{ fontSize:11, padding:'2px 8px', borderRadius:20, backgroundColor:'var(--primary)22', color:'var(--primary)', fontWeight:600 }}>
-              <User size={10} style={{ marginRight:3, verticalAlign:'middle' }}/>
-              Profil comportemental
-            </span>
-          )}
+      {/* ── Config ── */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <p style={{ fontWeight: 700, fontSize: 14.5, margin: '0 0 16px' }}>Mes disponibilités</p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 20 }}>
+          <WindowEditor label="Lundi → Vendredi" emoji="📅" win={windows.weekday}
+            onToggle={() => toggleWin('weekday')} onRange={(i, k, v) => setRange('weekday', i, k, v)}
+            onAdd={() => addRange('weekday')} onRemove={(i) => removeRange('weekday', i)} />
+          <WindowEditor label="Samedi & Dimanche" emoji="🏖️" win={windows.weekend}
+            onToggle={() => toggleWin('weekend')} onRange={(i, k, v) => setRange('weekend', i, k, v)}
+            onAdd={() => addRange('weekend')} onRemove={(i) => removeRange('weekend', i)} />
         </div>
 
-        <div style={{ marginBottom:18 }}>
-          <SlotPicker label="📅 Lundi → Vendredi" slots={slotConfig.weekday} onChange={(id,k,v) => mutateSlot('weekday',id,k,v)}/>
-        </div>
-        <div style={{ marginBottom:20, paddingTop:16, borderTop:'1px solid var(--border)' }}>
-          <SlotPicker label="🏖️ Samedi & Dimanche" slots={slotConfig.weekend} onChange={(id,k,v) => mutateSlot('weekend',id,k,v)}/>
-        </div>
-
-        {/* Mode selector + horizon + generate */}
-        <div style={{ paddingTop:16, borderTop:'1px solid var(--border)' }}>
-          <p style={{ fontSize:13, fontWeight:600, marginBottom:10 }}>Mode de génération</p>
-          <div style={{ display:'flex', gap:8, marginBottom:14, flexWrap:'wrap' }}>
-            {[
-              { id:'algo',   label:'⚡ Rapide',      desc:'Algorithme instantané (sans IA)' },
-              { id:'claude', label:'🤖 Claude IA',   desc:'Claude génère le plan avec conseils' },
-              { id:'grok',   label:'⚡ Grok IA',     desc:'Grok (xAI) génère le plan' },
-            ].map(m => (
-              <button key={m.id} onClick={() => { setAiMode(m.id); setResult(null); setAiPlan(null); setError(''); }}
-                style={{
-                  padding:'10px 16px', borderRadius:10, cursor:'pointer',
-                  border:`2px solid ${aiMode === m.id ? 'var(--primary)' : 'var(--border)'}`,
-                  backgroundColor: aiMode === m.id ? 'var(--primary)12' : 'var(--card)',
-                  color: aiMode === m.id ? 'var(--primary)' : 'var(--text)',
-                  fontWeight: aiMode === m.id ? 700 : 400, fontSize:13,
-                  transition:'all 0.15s', textAlign:'left',
-                }}>
-                <div>{m.label}</div>
-                <div style={{ fontSize:11, color:'var(--muted)', marginTop:2 }}>{m.desc}</div>
-              </button>
-            ))}
+        <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+          <div className="form-group" style={{ width: 150, marginBottom: 0 }}>
+            <label className="form-label">Durée d'une session</label>
+            <select value={sessionLen} onChange={e => { setSessionLen(Number(e.target.value)); setPlan(null); }}>
+              <option value={30}>30 minutes</option>
+              <option value={45}>45 minutes</option>
+              <option value={60}>1 heure</option>
+              <option value={90}>1h30</option>
+            </select>
           </div>
-
-          <div style={{ display:'flex', gap:14, alignItems:'flex-end', flexWrap:'wrap' }}>
-            <div className="form-group" style={{ minWidth:150, marginBottom:0 }}>
-              <label className="form-label">Horizon (jours)</label>
-              <input type="number" min={3} max={60} value={days}
-                onChange={e => { setDays(Number(e.target.value)); setResult(null); setAiPlan(null); }}/>
-            </div>
-            {aiMode === 'grok' && (
-              <div className="form-group" style={{ minWidth:150, marginBottom:0 }}>
-                <label className="form-label">Modèle Grok</label>
-                <select value={grokModel} onChange={e => setGrokModel(e.target.value)}>
-                  <option value="grok-3">grok-3</option>
-                  <option value="grok-3-mini">grok-3-mini</option>
-                  <option value="grok-2">grok-2</option>
-                </select>
-              </div>
-            )}
-            <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-              <span style={{ fontSize:12, color:'var(--muted)' }}>~{avgHoursDay}h/jour en moyenne</span>
-              <div style={{ display:'flex', gap:8 }}>
-                <button className="btn-primary" onClick={handleGenerate} disabled={generating}
-                  style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 20px' }}>
-                  {generating
-                    ? <><Loader size={14} style={{ animation:'spin 1s linear infinite' }}/> Génération…</>
-                    : <><Wand2 size={15}/> Générer le planning</>
-                  }
-                </button>
-                {aiMode !== 'algo' && (
-                  <button onClick={() => setShowSetup(true)}
-                    style={{ padding:'10px 14px', borderRadius:10, border:'1px solid var(--border)', background:'none', color:'var(--muted)', fontSize:12.5, cursor:'pointer' }}>
-                    🔑 Clé API
-                  </button>
-                )}
-              </div>
-            </div>
+          <div className="form-group" style={{ width: 130, marginBottom: 0 }}>
+            <label className="form-label">Horizon</label>
+            <select value={horizon} onChange={e => { setHorizon(Number(e.target.value)); setPlan(null); }}>
+              <option value={7}>7 jours</option>
+              <option value={14}>14 jours</option>
+              <option value={21}>21 jours</option>
+              <option value={30}>30 jours</option>
+            </select>
           </div>
-
-          {/* Progress bar (AI mode) */}
-          {generating && (
-            <div style={{ marginTop:14 }}>
-              <div style={{ height:4, backgroundColor:'var(--border)', borderRadius:4, overflow:'hidden' }}>
-                <div style={{ height:'100%', backgroundColor:'var(--primary)', borderRadius:4, width:`${progress}%`, transition:'width 0.3s' }}/>
-              </div>
-              <p style={{ fontSize:11.5, color:'var(--muted)', marginTop:4 }}>
-                {aiMode === 'claude' ? '🤖 Claude' : '⚡ Grok'} génère ton planning personnalisé…
-              </p>
-            </div>
-          )}
-
-          {error && (
-            <div style={{ marginTop:12, padding:'10px 14px', borderRadius:8, backgroundColor:'#f8717118', border:'1px solid #f87171', fontSize:13, color:'#f87171' }}>
-              ⚠️ {error}
-              {(error.includes('Claude') || error.includes('Grok')) && (
-                <button onClick={() => setShowSetup(true)}
-                  style={{ marginLeft:10, fontSize:12, color:'var(--primary)', background:'none', border:'none', cursor:'pointer', textDecoration:'underline' }}>
-                  Configurer la clé
-                </button>
-              )}
-            </div>
-          )}
+          <button className="btn-primary" onClick={generate}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 20px' }}>
+            <Wand2 size={15} /> Générer
+          </button>
         </div>
 
         {/* Context chips */}
-        <div style={{ marginTop:14, display:'flex', gap:8, flexWrap:'wrap' }}>
-          {[
-            [`${assignments.filter(a => a.status !== 'done').length} devoirs en attente`,    'var(--primary)'],
-            [`${exams.filter(e => new Date(e.date) >= new Date()).length} examens à venir`, 'var(--danger)'],
-            ...(profile?.delayTendency > 0.4 ? [[`Retard : ${Math.round(profile.delayTendency * 100)}%`, 'var(--warning)']] : []),
-          ].map(([label, color]) => (
-            <span key={label} style={{ fontSize:12, padding:'3px 10px', borderRadius:20, backgroundColor:color+'22', color }}>{label}</span>
-          ))}
-          {/* Timetable chip — shows if the user has courses loaded */}
-          {totalCourseSlots > 0 ? (
-            <span style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, padding:'3px 10px', borderRadius:20, backgroundColor:'#10b98122', color:'#10b981', fontWeight:600 }}>
-              <BookOpen size={11}/> {busyDayCount} jour{busyDayCount > 1 ? 's' : ''} de cours pris en compte
-            </span>
-          ) : (
-            <span style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, padding:'3px 10px', borderRadius:20, backgroundColor:'var(--border)', color:'var(--muted)' }}>
-              <BookOpen size={11}/> Aucun cours dans l'emploi du temps
-            </span>
-          )}
+        <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, padding: '3px 10px', borderRadius: 20, backgroundColor: 'var(--primary)22', color: 'var(--primary)' }}>{pendingCount} devoirs</span>
+          <span style={{ fontSize: 12, padding: '3px 10px', borderRadius: 20, backgroundColor: 'var(--danger)22', color: 'var(--danger)' }}>{examCount} examens</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, padding: '3px 10px', borderRadius: 20,
+            backgroundColor: busyDayCount ? '#10b98122' : 'var(--border)', color: busyDayCount ? '#10b981' : 'var(--muted)', fontWeight: 600 }}>
+            <BookOpen size={11} /> {busyDayCount ? `${busyDayCount} jours de cours pris en compte` : 'Aucun cours'}
+          </span>
         </div>
       </div>
 
-      {/* ── Algo suggestions ── */}
-      {!isAIMode && result?.suggestions?.length > 0 && (
-        <div style={{ marginBottom:20, display:'flex', flexDirection:'column', gap:6 }}>
-          {result.suggestions.map((s, i) => (
-            <div key={i} style={{
-              display:'flex', alignItems:'flex-start', gap:10,
-              padding:'10px 14px', borderRadius:10,
-              backgroundColor:SEVERITY_BG[s.severity], border:`1px solid ${SEVERITY_COLOR[s.severity]}40`,
-            }}>
-              <Zap size={13} color={SEVERITY_COLOR[s.severity]} style={{ marginTop:1, flexShrink:0 }}/>
-              <span style={{ fontSize:13, flex:1 }}>{s.message}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ── Rebalance (algo only) ── */}
-      {!isAIMode && overloadCount > 0 && (
-        <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:16 }}>
-          <button className="btn-primary" onClick={handleRebalance}
-            style={{ display:'flex', alignItems:'center', gap:6, fontSize:13 }}>
-            <RefreshCw size={13}/> Rééquilibrer ({overloadCount} jour{overloadCount>1?'s':''} surchargé{overloadCount>1?'s':''})
-          </button>
-        </div>
-      )}
-
-      {/* ── Empty state ── */}
-      {nonEmpty.length === 0 && !generating && (result || aiPlan) && (
-        <div className="card" style={{ textAlign:'center', padding:40 }}>
-          <p style={{ fontSize:28, marginBottom:8 }}>🎉</p>
-          <p style={{ color:'var(--muted)' }}>Aucune tâche à planifier — tu es parfaitement à jour !</p>
-        </div>
-      )}
-
-      {/* ── Plan output ── */}
-      {nonEmpty.length > 0 && (
-        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
-            <p style={{ fontSize:13, color:'var(--muted)', margin:0 }}>
-              Planning sur <strong>{nonEmpty.length} jours actifs</strong>
-              {isAIMode && <span style={{ color:'var(--primary)', marginLeft:6 }}>· généré par {aiMode === 'grok' ? '⚡ Grok' : '🤖 Claude'}</span>}
-              {!isAIMode && result?.profileUsed && <span style={{ color:'var(--primary)', marginLeft:6 }}>· adapté à ton profil</span>}
-            </p>
-            <button
-              onClick={() => exportICS(nonEmpty, slotConfig, isAIMode)}
-              style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'none', color:'var(--text)', fontSize:12.5, fontWeight:600, cursor:'pointer' }}>
-              <Download size={13}/> Exporter .ics
+      {error && (
+        <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 8, backgroundColor: '#f8717118', border: '1px solid #f87171', fontSize: 13, color: '#f87171' }}>
+          ⚠️ {error}
+          {error.includes('clé') && (
+            <button onClick={() => setShowSetup(true)} style={{ marginLeft: 10, fontSize: 12, color: 'var(--primary)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+              Configurer
             </button>
+          )}
+        </div>
+      )}
+
+      {/* ── Results ── */}
+      {plan && activeDays.length === 0 && (
+        <div className="card" style={{ textAlign: 'center', padding: 40 }}>
+          <p style={{ fontSize: 28, marginBottom: 8 }}>🎉</p>
+          <p style={{ color: 'var(--muted)' }}>Aucune tâche à planifier — tu es parfaitement à jour !</p>
+        </div>
+      )}
+
+      {plan && activeDays.length > 0 && (
+        <>
+          {/* Stats + bulk actions */}
+          <div className="card" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 20, flex: 1, flexWrap: 'wrap' }}>
+              <div><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--primary)' }}>{plan.stats.totalHours}h</div><div style={{ fontSize: 11, color: 'var(--muted)' }}>d'étude</div></div>
+              <div><div style={{ fontSize: 22, fontWeight: 800 }}>{plan.stats.blocks}</div><div style={{ fontSize: 11, color: 'var(--muted)' }}>blocs</div></div>
+              <div><div style={{ fontSize: 22, fontWeight: 800 }}>{plan.stats.activeDays}</div><div style={{ fontSize: 11, color: 'var(--muted)' }}>jours actifs</div></div>
+              {plan.stats.unscheduled > 0 && (
+                <div title="Sessions non casées faute de créneaux libres">
+                  <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--warning)' }}>{plan.stats.unscheduled}</div>
+                  <div style={{ fontSize: 11, color: 'var(--warning)' }}>non casées</div>
+                </div>
+              )}
+            </div>
           </div>
 
-          {nonEmpty.map(day => (
-            <DayCard key={day.date} day={day} isAIMode={isAIMode}/>
-          ))}
-        </div>
+          {plan.stats.unscheduled > 0 && (
+            <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 8, backgroundColor: 'var(--warning)15', border: '1px solid var(--warning)40', fontSize: 12.5, color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <AlertTriangle size={14} /> {plan.stats.unscheduled} session(s) n'ont pas pu être placées — ajoute des créneaux ou augmente l'horizon.
+            </div>
+          )}
+
+          {/* Action bar */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button onClick={addAllSchedule} style={actionBtn}>
+              <CalendarPlus size={13} /> Tout ajouter à l'EDT
+            </button>
+            <button onClick={addAllReminders} style={actionBtn}>
+              <Bell size={13} /> Tout en rappels
+            </button>
+            <button onClick={() => exportPlanICS(activeDays)} style={actionBtn}>
+              <Download size={13} /> Export .ics
+            </button>
+
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+              <select value={aiProvider} onChange={e => setAiProvider(e.target.value)}
+                style={{ width: 'auto', fontSize: 12, padding: '6px 8px' }}>
+                <option value="claude">🤖 Claude</option>
+                <option value="grok">⚡ Grok</option>
+              </select>
+              {aiProvider === 'grok' && (
+                <select value={grokModel} onChange={e => setGrokModel(e.target.value)} style={{ width: 'auto', fontSize: 12, padding: '6px 8px' }}>
+                  <option value="grok-3">grok-3</option>
+                  <option value="grok-3-mini">grok-3-mini</option>
+                </select>
+              )}
+              <button onClick={improveWithAI} disabled={enriching}
+                style={{ ...actionBtn, border: '1px solid var(--primary)', color: 'var(--primary)', background: 'var(--primary)10' }}>
+                {enriching
+                  ? <><Loader size={13} style={{ animation: 'spin 1s linear infinite' }} /> Enrichissement…</>
+                  : <><Sparkles size={13} /> Améliorer avec l'IA</>}
+              </button>
+            </div>
+          </div>
+
+          {enriching && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ height: 4, backgroundColor: 'var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{ height: '100%', backgroundColor: 'var(--primary)', borderRadius: 4, width: `${progress}%`, transition: 'width 0.3s' }} />
+              </div>
+            </div>
+          )}
+
+          {/* Days */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {activeDays.map(day => (
+              <DayCard key={day.date} day={day} addedSet={added} remindedSet={reminded}
+                onAddSchedule={onAddSchedule} onAddReminder={onAddReminder} />
+            ))}
+          </div>
+        </>
       )}
 
       {/* Toast */}
       {notification && (
-        <div style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)', backgroundColor:'var(--surface)', border:'1px solid var(--border)', borderRadius:12, padding:'10px 22px', fontSize:13.5, fontWeight:600, boxShadow:'0 4px 24px rgba(0,0,0,0.2)', zIndex:999, color:'var(--success)' }}>
+        <div style={{ position: 'fixed', bottom: isMobile ? 80 : 24, left: '50%', transform: 'translateX(-50%)', backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '10px 22px', fontSize: 13.5, fontWeight: 600, boxShadow: '0 4px 24px rgba(0,0,0,0.2)', zIndex: 999, whiteSpace: 'nowrap' }}>
           {notification}
         </div>
       )}
 
       {showSetup && (
-        <ApiKeySetup
-          onClose={() => setShowSetup(false)}
-          onSaved={() => { setShowSetup(false); notify('✅ Clé API enregistrée !'); }}
-        />
+        <ApiKeySetup onClose={() => setShowSetup(false)} onSaved={() => { setShowSetup(false); notify('✅ Clé API enregistrée !'); }} />
       )}
 
       <style>{`@keyframes spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }`}</style>
     </div>
   );
 }
+
+const actionBtn = {
+  display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8,
+  border: '1px solid var(--border)', background: 'none', color: 'var(--text)',
+  fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+};

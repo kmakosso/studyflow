@@ -562,6 +562,73 @@ Génère uniquement les jours qui ont au moins une tâche. Maximum ${days} jours
   }
 }
 
+/**
+ * Améliore un agenda déjà généré par l'algo : ajoute un objectif + un
+ * conseil par bloc et un message de motivation par jour, SANS changer
+ * les horaires. Retourne le même tableau `days` enrichi.
+ */
+export async function enrichPlanWithAI(days, { provider = 'claude', grokModel = 'grok-3', onProgress } = {}) {
+  if (!days || days.length === 0) return days;
+
+  // Version compacte pour le prompt (on ne garde que ce qui est utile)
+  const compact = days
+    .filter(d => d.blocks.length > 0)
+    .map(d => ({
+      date: d.date,
+      blocks: d.blocks.map((b, i) => ({ i, t: b.title, s: b.subject, type: b.type, h: `${b.startTime}-${b.endTime}` })),
+    }));
+
+  const contextBlock = await buildAcademicContext();
+  const system = buildSystemPrompt(contextBlock);
+  const prompt = `Voici un planning d'étude déjà organisé (les horaires sont FIXES, ne les change pas).
+Pour CHAQUE bloc, ajoute un objectif clair et concret ("objective") et un conseil pratique court ("tip").
+Pour chaque jour, ajoute un court message de motivation ("dailyTip").
+
+Planning :
+${JSON.stringify(compact)}
+
+## FORMAT STRICT — réponds UNIQUEMENT avec ce JSON, sans texte avant/après :
+[
+  { "date":"YYYY-MM-DD", "dailyTip":"...", "blocks":[ { "i":0, "objective":"...", "tip":"..." } ] }
+]`;
+
+  const messages = [{ role: 'user', content: prompt }];
+  let raw = '';
+  if (provider === 'grok') {
+    if (!(await getGrokApiKey())) throw new Error('NO_GROK_API_KEY');
+    for await (const chunk of streamGrok({ messages, system, model: grokModel, maxTokens: 5000 })) {
+      raw += chunk; onProgress?.(raw.length);
+    }
+  } else {
+    if (!(await getApiKey())) throw new Error('NO_API_KEY');
+    for await (const chunk of streamMessage({ messages, system, maxTokens: 5000 })) {
+      raw += chunk; onProgress?.(raw.length);
+    }
+  }
+
+  let enrich;
+  try {
+    const match = raw.match(/\[[\s\S]*\]/);
+    enrich = match ? JSON.parse(match[0]) : [];
+  } catch { return days; }
+
+  const byDate = Object.fromEntries(enrich.map(e => [e.date, e]));
+  return days.map(d => {
+    const e = byDate[d.date];
+    if (!e) return d;
+    const blockEnrich = Object.fromEntries((e.blocks || []).map(b => [b.i, b]));
+    return {
+      ...d,
+      dailyTip: e.dailyTip || '',
+      blocks: d.blocks.map((b, i) => ({
+        ...b,
+        objective: blockEnrich[i]?.objective || b.objective,
+        tip:       blockEnrich[i]?.tip || b.tip,
+      })),
+    };
+  });
+}
+
 /* ─── High-level chat with academic context ─────────────────────── */
 
 export async function chatWithContext(userMessages, extraContext = '') {
