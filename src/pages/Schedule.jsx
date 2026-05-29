@@ -156,7 +156,7 @@ function CourseForm({ initial, subjects, onSubmit, onCancel }) {
 function WeekListView({ weekDates, forDateStr, byId, onEdit, onDelete }) {
   const todayStr = toDateStr(new Date());
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(140px,1fr))', gap:12 }}>
+    <div style={{ display:'grid', gridTemplateColumns:'repeat(7, minmax(116px,1fr))', gap:10, overflowX:'auto' }}>
       {weekDates.map((date, i) => {
         const dateStr = toDateStr(date);
         const courses = forDateStr(dateStr);
