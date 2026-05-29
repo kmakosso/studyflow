@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { db } from '../services/db';
 import { useSyncRefresh } from './useSyncRefresh';
 
-export const DAYS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
+export const DAYS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
 
-// JS getDay(): 0=Sun,1=Mon,...,6=Sat  →  our index: 0=Mon,...,5=Sat
+// JS getDay(): 0=Sun,1=Mon,...,6=Sat  →  our index: 0=Mon,...,6=Sun
 export function todayIndex() {
   const d = new Date().getDay();
-  return d === 0 ? -1 : d - 1;
+  return d === 0 ? 6 : d - 1;
 }
 
 /* ─── Week / date helpers (exported for use in pages) ─────────────── */
@@ -21,10 +21,10 @@ export function getWeekStart(refDate = new Date()) {
   return d;
 }
 
-/** Returns an array of 6 Date objects [Mon … Sat] for the week of refDate */
+/** Returns an array of 7 Date objects [Mon … Dim] for the week of refDate */
 export function getWeekDates(refDate = new Date()) {
   const mon = getWeekStart(refDate);
-  return Array.from({ length: 6 }, (_, i) => {
+  return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(mon);
     d.setDate(mon.getDate() + i);
     return d;
@@ -41,20 +41,22 @@ export function fromDateStr(s) {
   return new Date(s + 'T12:00:00');
 }
 
+/** Tri par heure de début — robuste si startTime manquant */
+function byStartTime(a, b) {
+  return String(a.startTime || '').localeCompare(String(b.startTime || ''));
+}
+
 /* ─── Hook ───────────────────────────────────────────────────────── */
 
 export function useSchedule() {
-  const [courses, setCourses]           = useState([]);
-  const [weekType, setWeekTypeState]    = useState('A');
-  const [loading, setLoading]           = useState(true);
+  const [courses, setCourses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  // weekType conservé pour compat — n'a plus aucun effet sur le filtrage.
+  const [weekType, setWeekTypeState] = useState('both');
 
   const load = useCallback(async () => {
-    const [data, wt] = await Promise.all([
-      db.all('courses'),
-      db.getSetting('weekType', 'A'),
-    ]);
+    const data = await db.all('courses');
     setCourses(data);
-    setWeekTypeState(wt);
     setLoading(false);
   }, []);
 
@@ -79,44 +81,32 @@ export function useSchedule() {
     await load();
   };
 
-  const setWeekType = async (wt) => {
-    await db.setSetting('weekType', wt);
-    setWeekTypeState(wt);
-  };
+  const setWeekType = (wt) => setWeekTypeState(wt); // no-op pour le filtrage
 
   /**
-   * Recurring courses for a day index (0=Mon … 5=Sat).
-   * Does NOT include date-specific courses.
+   * Cours récurrents pour un index de jour (0=Lun … 6=Dim).
+   * N'inclut PAS les cours liés à une date précise.
    */
-  const forDay = (dayIdx, wt = weekType) =>
+  const forDay = (dayIdx) =>
     courses
-      .filter(c => !c.date && c.day === dayIdx && (c.weekType === 'both' || c.weekType === wt))
-      .sort((a, b) => a.startTime.localeCompare(b.startTime));
+      .filter(c => !c.date && c.day === dayIdx)
+      .sort(byStartTime);
 
   /**
-   * All courses for a specific date string "YYYY-MM-DD":
-   *   - recurring courses whose day-index matches the date's weekday
-   *   - date-specific courses whose `date` field matches exactly
+   * Tous les cours d'une date "YYYY-MM-DD" :
+   *   - récurrents dont le jour correspond
+   *   - cours datés dont le champ `date` correspond exactement
    */
-  const forDateStr = useCallback((dateStr, wt = weekType) => {
+  const forDateStr = useCallback((dateStr) => {
     const d   = fromDateStr(dateStr);
-    const dow = d.getDay();                    // 0=Sun
-    const dayIdx = dow === 0 ? -1 : dow - 1;  // -1 if Sunday
+    const dow = d.getDay();                    // 0=Dim
+    const dayIdx = dow === 0 ? 6 : dow - 1;    // 0=Lun … 6=Dim
 
-    const recurring = dayIdx >= 0
-      ? courses.filter(c =>
-          !c.date &&
-          c.day === dayIdx &&
-          (c.weekType === 'both' || c.weekType === wt)
-        )
-      : [];
+    const recurring = courses.filter(c => !c.date && c.day === dayIdx);
+    const specific  = courses.filter(c => c.date === dateStr);
 
-    const specific = courses.filter(c => c.date === dateStr);
-
-    return [...recurring, ...specific].sort((a, b) =>
-      a.startTime.localeCompare(b.startTime)
-    );
-  }, [courses, weekType]);
+    return [...recurring, ...specific].sort(byStartTime);
+  }, [courses]);
 
   const today = () => {
     const idx = todayIndex();
